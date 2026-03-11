@@ -13,7 +13,7 @@ int png_print_info(const char *path, int verbose);
  * Preserves: IHDR, PLTE, IDAT, IEND, cHRM, gAMA, sRGB, iCCP, bKGD, pHYs.
  * Compressed pixel data (IDAT) is never touched.
  */
-int png_clean(const char *src, const char *dst,
-              StripMode strip_mode, int dry_run, int verbose);
+int png_clean(const char *src, const char *dst, StripMode strip_mode,
+              int dry_run, int verbose);
 
 #endif /* GHOSTIM_PNG_PARSER_H */

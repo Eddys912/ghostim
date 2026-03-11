@@ -4,11 +4,7 @@
 #include <stddef.h>
 
 /* Detected image format */
-typedef enum {
-    IMAGE_UNKNOWN = 0,
-    IMAGE_JPEG,
-    IMAGE_PNG
-} ImageType;
+typedef enum { IMAGE_UNKNOWN = 0, IMAGE_JPEG, IMAGE_PNG } ImageType;
 
 /*
  * Detect image type by reading the file magic bytes.
@@ -24,8 +20,7 @@ ImageType platform_detect_image_type(const char *path);
  *
  * dst must be at least dst_size bytes. Returns 0 on success, -1 on error.
  */
-int platform_build_output_path(char *dst, size_t dst_size,
-                               const char *src_path,
+int platform_build_output_path(char *dst, size_t dst_size, const char *src_path,
                                const char *output_dir);
 
 /*
@@ -36,8 +31,8 @@ int platform_mkdir_p(const char *path);
 
 /*
  * Rename src to dst atomically where possible.
- * Falls back to copy+delete on platforms that don't support cross-device rename.
- * Returns 0 on success, -1 on error.
+ * Falls back to copy+delete on platforms that don't support cross-device
+ * rename. Returns 0 on success, -1 on error.
  */
 int platform_replace_file(const char *dst, const char *src);
 
