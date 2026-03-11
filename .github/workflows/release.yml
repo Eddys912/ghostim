@@ -1,6 +1,5 @@
 name: Release
 
-# Runs when you push a version tag: git tag v1.0.0 && git push --tags
 on:
   push:
     tags:
@@ -17,9 +16,7 @@ jobs:
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build
-
-      - name: Rename binary
-        run: cp build/ghostim ghostim-linux-x86_64
+          cp build/ghostim ghostim-linux-x86_64
 
       - name: Upload
         uses: actions/upload-artifact@v4
@@ -56,30 +53,25 @@ jobs:
           name: ghostim-macos-universal
           path: ghostim-macos-universal
 
-  # ── Windows x86-64 (MinGW — compatible with pure C99) ────────────────────
+  # ── Windows x86-64 ────────────────────────────────────────────────────────
   windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install MinGW
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake
+      - name: Install MinGW via Chocolatey
+        run: choco install mingw -y
 
       - name: Build
-        shell: msys2 {0}
         run: |
-          cmake -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -G "MinGW Makefiles" \
-            -DCMAKE_C_COMPILER=gcc
+          cmake -B build -DCMAKE_BUILD_TYPE=Release `
+            -G "MinGW Makefiles" `
+            -DCMAKE_C_COMPILER="C:/ProgramData/mingw64/bin/gcc.exe" `
+            -DCMAKE_MAKE_PROGRAM="C:/ProgramData/mingw64/bin/mingw32-make.exe"
           cmake --build build
 
       - name: Rename binary
-        shell: msys2 {0}
-        run: cp build/ghostim.exe ghostim-windows-x86_64.exe
+        run: cp build\ghostim.exe ghostim-windows-x86_64.exe
 
       - name: Upload
         uses: actions/upload-artifact@v4
@@ -87,7 +79,7 @@ jobs:
           name: ghostim-windows-x86_64.exe
           path: ghostim-windows-x86_64.exe
 
-  # ── Create GitHub Release with all 3 binaries ────────────────────────────
+  # ── Publish Release ───────────────────────────────────────────────────────
   release:
     needs: [linux, macos, windows]
     runs-on: ubuntu-latest
@@ -100,6 +92,9 @@ jobs:
         with:
           path: dist/
           merge-multiple: true
+
+      - name: List dist
+        run: ls -la dist/
 
       - name: Publish Release
         uses: softprops/action-gh-release@v2
