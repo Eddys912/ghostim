@@ -1,0 +1,105 @@
+name: Release
+
+# Runs when you push a version tag: git tag v1.0.0 && git push --tags
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+
+  # ── Linux (Ubuntu LTS — binaries run on any modern distro) ───────────────
+  linux:
+    runs-on: ubuntu-22.04          # Ubuntu 22.04 LTS = very stable glibc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghostim-linux-x86_64
+          path: build/ghostim
+
+  # ── macOS (universal binary: Intel + Apple Silicon) ──────────────────────
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build x86_64
+        run: cmake -B build-x86 -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64 && cmake --build build-x86
+
+      - name: Build arm64
+        run: cmake -B build-arm -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 && cmake --build build-arm
+
+      - name: Merge universal binary
+        run: lipo -create build-x86/ghostim build-arm/ghostim -output ghostim-macos-universal
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghostim-macos-universal
+          path: ghostim-macos-universal
+
+  # ── Windows x86-64 ───────────────────────────────────────────────────────
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghostim-windows-x86_64.exe
+          path: build\Release\ghostim.exe
+
+  # ── Create GitHub Release with all 3 binaries ────────────────────────────
+  release:
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ghostim-linux-x86_64
+          path: dist/
+
+      - name: Download macOS binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ghostim-macos-universal
+          path: dist/
+
+      - name: Download Windows binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ghostim-windows-x86_64.exe
+          path: dist/
+
+      - name: Rename binaries clearly
+        run: |
+          mv dist/ghostim        dist/ghostim-linux-x86_64
+          mv dist/ghostim-macos-universal dist/ghostim-macos-universal
+          mv dist/ghostim.exe    dist/ghostim-windows-x86_64.exe
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/ghostim-linux-x86_64
+            dist/ghostim-macos-universal
+            dist/ghostim-windows-x86_64.exe

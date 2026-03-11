@@ -1,0 +1,31 @@
+# Gitattributes for ghostim
+# Documentation: https://git-scm.com/docs/gitattributes
+
+# Auto detect text files and perform LF normalization
+* text=auto eol=lf
+
+# C source and headers
+*.c text eol=lf
+*.h text eol=lf
+
+# Build
+CMakeLists.txt text eol=lf
+Justfile       text eol=lf
+
+# Markdown
+*.md text eol=lf
+
+# Config
+.editorconfig  text eol=lf
+.gitattributes text eol=lf
+.gitignore     text eol=lf
+
+# CI
+*.yml text eol=lf
+
+# Binary: do not modify
+*.o      binary
+*.a      binary
+*.so     binary
+*.exe    binary
+ghostim  binary

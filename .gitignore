@@ -1,0 +1,43 @@
+# Gitignore for ghostim
+# Documentation: https://git-scm.com/docs/gitignore
+
+# CMake build directories
+build/
+img/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+install_manifest.txt
+
+# Compiled binaries
+ghostim.exe
+ghostim-linux-*
+ghostim-macos-*
+ghostim-windows-*
+
+# Temp files created during clean operation
+*.ghostim_tmp
+
+# Object files
+*.o
+*.a
+
+# Temporary or backup files
+*~
+*.temp
+*.tmp
+*.bak
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
