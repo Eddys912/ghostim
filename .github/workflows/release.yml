@@ -4,13 +4,12 @@ name: Release
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - "v*.*.*"
 
 jobs:
-
-  # ── Linux (Ubuntu LTS — binaries run on any modern distro) ───────────────
+  # ── Linux (Ubuntu 22.04 LTS) ──────────────────────────────────────────────
   linux:
-    runs-on: ubuntu-22.04          # Ubuntu 22.04 LTS = very stable glibc
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -19,26 +18,37 @@ jobs:
           cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build
 
+      - name: Rename binary
+        run: cp build/ghostim ghostim-linux-x86_64
+
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: ghostim-linux-x86_64
-          path: build/ghostim
+          path: ghostim-linux-x86_64
 
-  # ── macOS (universal binary: Intel + Apple Silicon) ──────────────────────
+  # ── macOS (universal: Intel + Apple Silicon) ──────────────────────────────
   macos:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Build x86_64
-        run: cmake -B build-x86 -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64 && cmake --build build-x86
+        run: |
+          cmake -B build-x86 -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64
+          cmake --build build-x86
 
       - name: Build arm64
-        run: cmake -B build-arm -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 && cmake --build build-arm
+        run: |
+          cmake -B build-arm -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64
+          cmake --build build-arm
 
       - name: Merge universal binary
-        run: lipo -create build-x86/ghostim build-arm/ghostim -output ghostim-macos-universal
+        run: |
+          lipo -create build-x86/ghostim build-arm/ghostim \
+            -output ghostim-macos-universal
 
       - name: Upload
         uses: actions/upload-artifact@v4
@@ -46,22 +56,36 @@ jobs:
           name: ghostim-macos-universal
           path: ghostim-macos-universal
 
-  # ── Windows x86-64 ───────────────────────────────────────────────────────
+  # ── Windows x86-64 (MinGW — compatible with pure C99) ────────────────────
   windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install MinGW
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake
+
       - name: Build
+        shell: msys2 {0}
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --config Release
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -G "MinGW Makefiles" \
+            -DCMAKE_C_COMPILER=gcc
+          cmake --build build
+
+      - name: Rename binary
+        shell: msys2 {0}
+        run: cp build/ghostim.exe ghostim-windows-x86_64.exe
 
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: ghostim-windows-x86_64.exe
-          path: build\Release\ghostim.exe
+          path: ghostim-windows-x86_64.exe
 
   # ── Create GitHub Release with all 3 binaries ────────────────────────────
   release:
@@ -71,29 +95,11 @@ jobs:
       contents: write
 
     steps:
-      - name: Download Linux binary
+      - name: Download all binaries
         uses: actions/download-artifact@v4
         with:
-          name: ghostim-linux-x86_64
           path: dist/
-
-      - name: Download macOS binary
-        uses: actions/download-artifact@v4
-        with:
-          name: ghostim-macos-universal
-          path: dist/
-
-      - name: Download Windows binary
-        uses: actions/download-artifact@v4
-        with:
-          name: ghostim-windows-x86_64.exe
-          path: dist/
-
-      - name: Rename binaries clearly
-        run: |
-          mv dist/ghostim        dist/ghostim-linux-x86_64
-          mv dist/ghostim-macos-universal dist/ghostim-macos-universal
-          mv dist/ghostim.exe    dist/ghostim-windows-x86_64.exe
+          merge-multiple: true
 
       - name: Publish Release
         uses: softprops/action-gh-release@v2
