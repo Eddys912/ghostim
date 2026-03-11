@@ -56,18 +56,28 @@ jobs:
   # ── Windows x86-64 ────────────────────────────────────────────────────────
   windows:
     runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install MinGW via Chocolatey
-        run: choco install mingw -y
+      - name: Install MinGW
+        run: |
+          choco install mingw -y --no-progress
+          # Refresh PATH so gcc is available in subsequent steps
+          $mingwPath = "C:\ProgramData\mingw64\bin"
+          if (-not (Test-Path $mingwPath)) {
+            $mingwPath = "C:\tools\mingw64\bin"
+          }
+          echo $mingwPath | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "MinGW path: $mingwPath"
+          Get-ChildItem $mingwPath | Where-Object { $_.Name -match "gcc|make" }
 
       - name: Build
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release `
-            -G "MinGW Makefiles" `
-            -DCMAKE_C_COMPILER="C:/ProgramData/mingw64/bin/gcc.exe" `
-            -DCMAKE_MAKE_PROGRAM="C:/ProgramData/mingw64/bin/mingw32-make.exe"
+          gcc --version
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -G "MinGW Makefiles"
           cmake --build build
 
       - name: Rename binary
