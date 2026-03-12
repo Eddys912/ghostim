@@ -5,6 +5,9 @@ on:
     tags:
       - "v*.*.*"
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   # ── Linux ──────────────────────────────────────────────────────────────────
   linux:
@@ -26,14 +29,34 @@ jobs:
           cmake --build build
           cp build/ghostim ghostim-linux-x86_64
 
-      - name: Upload
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: ghostim-linux-x86_64
           path: ghostim-linux-x86_64
 
-  # ── macOS (universal: Intel + Apple Silicon) ───────────────────────────────
-  macos:
+  # ── macOS x86_64 (Intel runner — native libs) ──────────────────────────────
+  macos-x86:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install jpeg-turbo libpng webp
+
+      - name: Build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_PREFIX_PATH=/usr/local
+          cmake --build build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghostim-macos-x86_64
+          path: build/ghostim
+
+  # ── macOS arm64 (Apple Silicon runner — native libs) ───────────────────────
+  macos-arm:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,40 +64,44 @@ jobs:
       - name: Install dependencies
         run: brew install jpeg-turbo libpng webp
 
-      - name: Build x86_64
-        env:
-          # Homebrew on Apple Silicon is in /opt/homebrew, Intel in /usr/local
-          # CMAKE_PREFIX_PATH tells find_package where to search
-          CMAKE_PREFIX_PATH: /opt/homebrew:/usr/local
+      - name: Build
         run: |
-          cmake -B build-x86 -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
-            -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH"
-          cmake --build build-x86
-
-      - name: Build arm64
-        env:
-          CMAKE_PREFIX_PATH: /opt/homebrew:/usr/local
-        run: |
-          cmake -B build-arm -DCMAKE_BUILD_TYPE=Release \
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH"
-          cmake --build build-arm
+            -DCMAKE_PREFIX_PATH=/opt/homebrew
+          cmake --build build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghostim-macos-arm64
+          path: build/ghostim
+
+  # ── macOS universal (merge x86_64 + arm64) ────────────────────────────────
+  macos-universal:
+    needs: [macos-x86, macos-arm]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ghostim-macos-x86_64
+          path: bin-x86/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ghostim-macos-arm64
+          path: bin-arm/
 
       - name: Merge universal binary
         run: |
-          lipo -create build-x86/ghostim build-arm/ghostim \
+          lipo -create bin-x86/ghostim bin-arm/ghostim \
             -output ghostim-macos-universal
 
-      - name: Upload
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: ghostim-macos-universal
           path: ghostim-macos-universal
 
-  # ── Windows x86-64 (MSYS2 + pre-built MinGW packages) ─────────────────────
-  # MSYS2 provides pre-compiled packages — no compilation from source,
-  # build time is under 90 seconds total.
+  # ── Windows x86-64 (MSYS2 pre-built packages) ─────────────────────────────
   windows:
     runs-on: windows-latest
     steps:
@@ -99,27 +126,24 @@ jobs:
           cmake --build build
           cp build/ghostim.exe ghostim-windows-x86_64.exe
 
-      - name: Upload
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: ghostim-windows-x86_64.exe
           path: ghostim-windows-x86_64.exe
 
   # ── Publish Release ────────────────────────────────────────────────────────
   release:
-    needs: [linux, macos, windows]
+    needs: [linux, macos-universal, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download all binaries
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           path: dist/
           merge-multiple: true
 
-      - name: Publish Release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           files: |
