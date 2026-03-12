@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>ghostim</h1>
+  <h1>Ghotimg</h1>
   <p>Image metadata remover for <strong>JPEG</strong> and <strong>PNG</strong> files</p>
 
 ![Arch](https://img.shields.io/badge/Arch-1793D1?logo=archlinux&logoColor=1793D1&labelColor=fff&color=1793D1)
@@ -9,7 +9,7 @@
 
 ## Description
 
-ghostim removes all metadata embedded in JPEG and PNG files — EXIF data, GPS coordinates, camera model, timestamps, comments, and vendor segments — without modifying a single pixel of the image.
+Ghostimg removes all metadata embedded in JPEG and PNG files — EXIF data, GPS coordinates, camera model, timestamps, comments, and vendor segments — without modifying a single pixel of the image.
 
 It works by parsing the raw binary format directly, with **zero external dependencies**. Only the C standard library is used.
 
@@ -26,122 +26,129 @@ What is always preserved:
 - **Pixel data** — the actual image, untouched
 - **ICC color profile** — preserves color accuracy
 
-## Requirements
+## Installation Requirements
 
-- **OS**: Linux, macOS, or Windows
-- **C Compiler**: GCC or Clang (C99)
-- **Build**: CMake ≥ 3.15
-- **Optional**: Just (command runner for shortcuts)
-
-## Installation
-
-### Arch Linux / WSL
-
-```bash
-sudo pacman -S cmake gcc just
-```
-
-### Debian / Ubuntu
-
-```bash
-sudo apt install cmake gcc
-# just: https://just.systems
-```
-
-## Build
-
-```bash
-git clone https://github.com/YOUR_USERNAME/ghostim.git
-cd ghostim
-
-# With Just (recommended)
-just build      # debug + sanitizers
-just release    # optimized binary
-
-# With CMake directly
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-```
-
-Binary output: `build/ghostim`
+- **Operating System**: Linux, macOS, or Windows
+- **Architecture**: x86-64 (64-bit).
+- **C Compiler GCC**: version 15.2.1 or higher.
+- **C Debugger GDB**: version 17.1 or higher.
+- **C Build CMake**: version 4.2.3 or higher.
+- **Just command runner**: version 1.46.0 or higher.
 
 ## Usage
 
 ```bash
-ghostim <command> [options] <file(s)>
+ghostimg <command> [options] <file(s)>
 ```
 
 ### Commands
 
-| Command | Description |
-| `info <file>` | Show all metadata found in a file |
-| `clean <file(s)>` | Remove all metadata from file(s) |
+| Command           | Description                       |
+| ----------------- | --------------------------------- |
+| `info <file>`     | Show all metadata found in a file |
+| `clean <file(s)>` | Remove all metadata from file(s)  |
 
 ### Options
 
-| Option | Description |
-| `--strip gps` | Remove only GPS coordinates |
-| `--output <dir>` | Write cleaned files to a directory |
-| `--dry-run` | Preview what would be removed, without writing |
-| `--verbose` | Show every segment removed |
+| Option           | Description                                    |
+| ---------------- | ---------------------------------------------- |
+| `--strip gps`    | Remove only GPS coordinates                    |
+| `--output <dir>` | Write cleaned files to a directory             |
+| `--dry-run`      | Preview what would be removed, without writing |
+| `--verbose`      | Show every segment removed                     |
 
 ### Examples
 
 ```bash
 # Inspect a photo before cleaning
-ghostim info photo.jpg
+ghostimg info photo.jpg
 
 # Remove all metadata (overwrites in place)
-ghostim clean photo.jpg
+ghostimg clean photo.jpg
 
 # Remove only GPS, keep other EXIF
-ghostim clean photo.jpg --strip gps
+ghostimg clean photo.jpg --strip gps
 
 # Clean a batch into a separate folder
-ghostim clean *.jpg --output ./clean/
+ghostimg clean *.jpg --output ./clean/
 
 # Preview without writing
-ghostim clean photo.jpg --dry-run --verbose
-```
-
-### With Just
-
-```bash
-just info photo.jpg     # show metadata
-just clean photo.jpg    # remove all metadata
-just dry photo.jpg      # preview without writing
+ghostimg clean photo.jpg --dry-run --verbose
 ```
 
 ## Download
 
 Pre-built binaries are available on the [Releases](../../releases/latest) page.
 
-| Platform | File |
-| Linux x86-64 | `ghostim-linux-x86_64` |
-| macOS (Intel + Apple Silicon) | `ghostim-macos-universal` |
-| Windows x86-64 | `ghostim-windows-x86_64.exe` |
+| Platform                      | File                          |
+| ----------------------------- | ----------------------------- |
+| Linux x86-64                  | `ghostimg-linux-x86_64`       |
+| macOS (Intel + Apple Silicon) | `ghostimg-macos-universal`    |
+| Windows x86-64                | `ghostimg-windows-x86_64.exe` |
 
 ```bash
 # Linux / macOS: make executable first
-chmod +x ghostim-linux-x86_64
+chmod +x ghostimg-linux-x86_64
 ```
 
 ## How It Works
 
 ### JPEG
 
-JPEG files are a sequence of markers (`FF XX`). Each metadata segment is a separate marker before the compressed scan data. ghostim walks every marker, identifies and removes non-image segments (APP0, APP1, APP3–APPF, COM), and writes the rest verbatim. The compressed pixel data after `SOS` is never read or modified.
+JPEG files are a sequence of markers (`FF XX`). Each metadata segment is a separate marker before the compressed scan data. Ghostimg walks every marker, identifies and removes non-image segments (APP0, APP1, APP3–APPF, COM), and writes the rest verbatim. The compressed pixel data after `SOS` is never read or modified.
 
 ### PNG
 
-PNG files are a sequence of chunks (`length + type + data + CRC`). ghostim reads each chunk header, drops metadata chunks (`eXIf`, `tEXt`, `iTXt`, `zTXt`, `tIME`), and copies the rest unchanged. `IDAT` (pixel data) is never touched.
+PNG files are a sequence of chunks (`length + type + data + CRC`). Ghostimg reads each chunk header, drops metadata chunks (`eXIf`, `tEXt`, `iTXt`, `zTXt`, `tIME`), and copies the rest unchanged. `IDAT` (pixel data) is never touched.
+
+## Execution Instructions
+
+### Arch Linux/WSL (Recommended)
+
+1. **Clone the repository**:
+   ```bash
+   git clone https://github.com/edavnix/ghostimg.git
+   ```
+   > **Note**: When using Arch Linux natively, proceed to **Step 4**. For Windows environments, complete all steps to install and configure WSL Arch.
+2. **Download and install WSL Arch** (PowerShell):
+   ```bash
+   wsl --install -d archlinux
+   ```
+3. **Restart the system** and access Arch Linux.
+4. **Install GDB, compilation tools and Just**:
+   ```bash
+   pacman -Syu
+   pacman -S gdb base-devel cmake just
+   ```
+5. **Verify installation**:
+   ```bash
+   gcc --version      # e.g. gcc (GCC) 15.2.1
+   gdb --version      # e.g. GNU gdb (GDB) 17.1
+   cmake --version    # e.g. cmake version 4.2.3
+   just --version     # e.g. just 1.46.0
+   uname -m           # e.g. x86_64
+   ```
+6. **Navigate to the directory**:
+   ```bash
+   cd ghostimg
+   ```
+7. **Execute exercises** use `just run` followed by the file name or path:
+   ```bash
+   just                   # view available commands
+   just build             # debug and sanitizers
+   just release           # optimized binary
+   just info photo.png    # display metadata
+   just clean photo.png   # remove all metadata
+   just dry photo.png     # preview clean without writing
+   just wipe              # delete build directory
+   ```
 
 <div align="center">
   <br>
   <img
-    src="https://img.shields.io/badge/Zero%20dependencies-Pure%20C99-00599C?style=for-the-badge"
-    alt="Zero dependencies — Pure C99"
+    src="https://img.shields.io/badge/Made%20with-C%20%26%20Systems-00599C?style=for-the-badge"
+    alt="Made with C"
   />
   <br><br>
-  <p>⭐ <strong>Star this repository if it was useful</strong> ⭐</p>
+  <p>⭐ <strong>Star this repository to show support</strong> ⭐</p>
 </div>
