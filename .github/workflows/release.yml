@@ -34,67 +34,47 @@ jobs:
           name: ghostim-linux-x86_64
           path: ghostim-linux-x86_64
 
-  # ── macOS x86_64 (Intel runner — native libs) ──────────────────────────────
-  macos-x86:
-    runs-on: macos-13
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: brew install jpeg-turbo libpng webp
-
-      - name: Build
-        run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
-            -DCMAKE_PREFIX_PATH=/usr/local
-          cmake --build build
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ghostim-macos-x86_64
-          path: build/ghostim
-
-  # ── macOS arm64 (Apple Silicon runner — native libs) ───────────────────────
-  macos-arm:
+  # ── macOS universal (single Apple Silicon runner) ──────────────────────────
+  # arm64 built natively with /opt/homebrew libs.
+  # x86_64 built via Rosetta + x86_64 Homebrew at /usr/local.
+  # lipo merges both into a single universal binary.
+  macos:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: brew install jpeg-turbo libpng webp
+      - name: Install arm64 dependencies
+        run: brew install jpeg-turbo libpng webp 2>/dev/null || true
 
-      - name: Build
+      - name: Install x86_64 Homebrew and dependencies
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+          # Install x86_64 Homebrew under Rosetta if not present
+          if [ ! -f /usr/local/bin/brew ]; then
+            arch -x86_64 /bin/bash -c \
+              "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          fi
+          arch -x86_64 /usr/local/bin/brew install jpeg-turbo libpng webp \
+            2>/dev/null || true
+
+      - name: Build arm64
+        run: |
+          cmake -B build-arm -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_PREFIX_PATH=/opt/homebrew
-          cmake --build build
+          cmake --build build-arm
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ghostim-macos-arm64
-          path: build/ghostim
-
-  # ── macOS universal (merge x86_64 + arm64) ────────────────────────────────
-  macos-universal:
-    needs: [macos-x86, macos-arm]
-    runs-on: macos-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: ghostim-macos-x86_64
-          path: bin-x86/
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: ghostim-macos-arm64
-          path: bin-arm/
+      - name: Build x86_64
+        run: |
+          cmake -B build-x86 -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_PREFIX_PATH=/usr/local
+          cmake --build build-x86
 
       - name: Merge universal binary
         run: |
-          lipo -create bin-x86/ghostim bin-arm/ghostim \
+          lipo -create build-arm/ghostim build-x86/ghostim \
             -output ghostim-macos-universal
+          lipo -info ghostim-macos-universal
 
       - uses: actions/upload-artifact@v4
         with:
@@ -133,7 +113,7 @@ jobs:
 
   # ── Publish Release ────────────────────────────────────────────────────────
   release:
-    needs: [linux, macos-universal, windows]
+    needs: [linux, macos, windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
