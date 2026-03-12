@@ -6,6 +6,7 @@ on:
       - "v*.*.*"
 
 jobs:
+  # ── Linux ─────────────────────────────────────────────────────────────────
   linux:
     runs-on: ubuntu-22.04
     steps:
@@ -28,13 +29,14 @@ jobs:
           name: ghostim-linux-x86_64
           path: ghostim-linux-x86_64
 
+  # ── macOS (universal: Intel + Apple Silicon) ──────────────────────────────
   macos:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: brew install jpeg-turbo libpng webp
+        run: brew install jpeg-turbo libpng webp pkg-config
 
       - name: Build x86_64
         run: |
@@ -59,6 +61,7 @@ jobs:
           name: ghostim-macos-universal
           path: ghostim-macos-universal
 
+  # ── Windows x86-64 (MinGW + vcpkg) ───────────────────────────────────────
   windows:
     runs-on: windows-latest
     defaults:
@@ -67,23 +70,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install MinGW and dependencies
+      - name: Install MinGW
         run: |
           choco install mingw -y --no-progress
           echo "C:\ProgramData\mingw64\mingw64\bin" | `
             Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
+      - name: Install pkg-config
+        run: choco install pkgconfiglite -y --no-progress
+
       - name: Install libs via vcpkg
         run: |
-          vcpkg install libjpeg-turbo libpng libwebp --triplet x64-mingw-static
-          echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+          $root = $env:VCPKG_INSTALLATION_ROOT
+          & "$root\vcpkg" install libjpeg-turbo libpng libwebp `
+            --triplet x64-mingw-static
+          echo "VCPKG_ROOT=$root" >> $env:GITHUB_ENV
+
+          # Export pkg-config .pc files so CMake/pkg-config can find the libs
+          $pc = "$root\installed\x64-mingw-static\lib\pkgconfig"
+          echo "PKG_CONFIG_PATH=$pc" >> $env:GITHUB_ENV
 
       - name: Build
         run: |
           gcc --version
           cmake -B build -DCMAKE_BUILD_TYPE=Release `
             -G "MinGW Makefiles" `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-mingw-static
           cmake --build build
 
@@ -96,6 +108,7 @@ jobs:
           name: ghostim-windows-x86_64.exe
           path: ghostim-windows-x86_64.exe
 
+  # ── Publish Release ───────────────────────────────────────────────────────
   release:
     needs: [linux, macos, windows]
     runs-on: ubuntu-latest

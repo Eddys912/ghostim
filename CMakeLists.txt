@@ -33,31 +33,32 @@ target_include_directories(ghostim PRIVATE
     ${WEBP_INCLUDE_DIRS}
 )
 
-# ── Static linking — portable binary, no runtime deps for end user ────────
-if(NOT MSVC)
-    target_link_options(ghostim PRIVATE -static-libgcc)
-endif()
-
-target_link_libraries(ghostim PRIVATE
-    ${JPEG_STATIC_LIBRARIES}
-    ${PNG_STATIC_LIBRARIES}
-    ${WEBP_STATIC_LIBRARIES}
-)
-
-# Fallback to dynamic if static not available (e.g. macOS)
-if(NOT JPEG_STATIC_LIBRARIES)
+# ── Link libraries ────────────────────────────────────────────────────────
+# Use static libs when available, fallback to dynamic (required on macOS)
+if(JPEG_STATIC_LIBRARIES)
+    target_link_libraries(ghostim PRIVATE ${JPEG_STATIC_LIBRARIES})
+else()
     target_link_libraries(ghostim PRIVATE ${JPEG_LIBRARIES})
 endif()
-if(NOT PNG_STATIC_LIBRARIES)
+if(PNG_STATIC_LIBRARIES)
+    target_link_libraries(ghostim PRIVATE ${PNG_STATIC_LIBRARIES})
+else()
     target_link_libraries(ghostim PRIVATE ${PNG_LIBRARIES})
 endif()
-if(NOT WEBP_STATIC_LIBRARIES)
+if(WEBP_STATIC_LIBRARIES)
+    target_link_libraries(ghostim PRIVATE ${WEBP_STATIC_LIBRARIES})
+else()
     target_link_libraries(ghostim PRIVATE ${WEBP_LIBRARIES})
+endif()
+
+# static-libgcc only on Linux/MinGW — clang/macOS does not support it
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU" AND NOT APPLE)
+    target_link_options(ghostim PRIVATE -static-libgcc)
 endif()
 
 # ── Compiler warnings ─────────────────────────────────────────────────────
 if(MSVC)
-    target_compile_options(ghostim PRIVATE /W4 /WX)
+    target_compile_options(ghostim PRIVATE /W4)
 else()
     target_compile_options(ghostim PRIVATE
         -Wall -Wextra -Wpedantic -Wshadow
@@ -67,26 +68,17 @@ else()
 endif()
 
 # ── Sanitizers on Debug ───────────────────────────────────────────────────
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    if(NOT MSVC AND NOT WIN32)
-        target_compile_options(ghostim PRIVATE -fsanitize=address,undefined)
-        target_link_options(ghostim PRIVATE -fsanitize=address,undefined)
-    endif()
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT MSVC AND NOT WIN32)
+    target_compile_options(ghostim PRIVATE -fsanitize=address,undefined)
+    target_link_options(ghostim PRIVATE -fsanitize=address,undefined)
 endif()
 
 # ── Release: optimize + strip ─────────────────────────────────────────────
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    if(NOT MSVC)
-        target_compile_options(ghostim PRIVATE -O2)
-        if(NOT APPLE)
-            target_link_options(ghostim PRIVATE -s)
-        endif()
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT MSVC)
+    target_compile_options(ghostim PRIVATE -O2)
+    if(NOT APPLE)
+        target_link_options(ghostim PRIVATE -s)
     endif()
-endif()
-
-# ── Windows static runtime ────────────────────────────────────────────────
-if(MSVC)
-    set_property(TARGET ghostim PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
 endif()
 
 include(GNUInstallDirs)
