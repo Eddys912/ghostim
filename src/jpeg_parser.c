@@ -1,20 +1,11 @@
 /*
- * JPEG / EXIF parser — pure C, zero external dependencies.
+ * jpeg_parser.c — JPEG metadata removal and optimization.
  *
- * JPEG structure:
- *   SOI  (FF D8)
- *   APP0 (FF E0) — JFIF
- *   APP1 (FF E1) — EXIF  <── we target this
- *   ...
- *   EOI  (FF D9)
+ * Lossless path: walks raw JPEG markers, drops non-image segments.
+ *   No decode/encode — pixel data copied byte-for-byte.
  *
- * Every segment begins with a 2-byte marker followed by a 2-byte
- * big-endian length that includes the length field itself.
- *
- * EXIF data inside APP1:
- *   6 bytes "Exif\0\0"
- *   TIFF header (byte order mark + offset to first IFD)
- *   IFD0 → may contain GPS SubIFD (tag 0x8825)
+ * Lossy path: libjpeg-turbo decode → strip metadata → re-encode
+ *   at target quality. Achieves maximum compression.
  */
 
 #include "ghostim/jpeg_parser.h"
@@ -25,314 +16,302 @@
 #include <windows.h>
 #endif
 
-/* ── Endian helpers ──────────────────────────────────────────────────────── */
+#include <jerror.h>
+#include <jpeglib.h>
 
+/* ── JPEG marker constants ───────────────────────────────────────────────── */
+#define MARKER_SOI 0xD8
+#define MARKER_EOI 0xD9
+#define MARKER_APP0 0xE0
+#define MARKER_APP1 0xE1
+#define MARKER_APP2 0xE2 /* ICC profile — always keep */
+#define MARKER_COM 0xFE
+#define MARKER_SOS 0xDA
+
+/* ── TIFF/EXIF constants ─────────────────────────────────────────────────── */
+#define TAG_GPS_IFD 0x8825
+
+/* ── Endian helpers ──────────────────────────────────────────────────────── */
 static unsigned short read_be16(const unsigned char *p) {
   return (unsigned short)((p[0] << 8) | p[1]);
 }
-
 static unsigned short read_le16(const unsigned char *p) {
   return (unsigned short)((p[1] << 8) | p[0]);
 }
-
 static unsigned int read_be32(const unsigned char *p) {
   return ((unsigned int)p[0] << 24) | ((unsigned int)p[1] << 16) |
          ((unsigned int)p[2] << 8) | (unsigned int)p[3];
 }
-
 static unsigned int read_le32(const unsigned char *p) {
   return ((unsigned int)p[3] << 24) | ((unsigned int)p[2] << 16) |
          ((unsigned int)p[1] << 8) | (unsigned int)p[0];
 }
 
-/* ── JPEG markers ────────────────────────────────────────────────────────── */
-#define MARKER_SOI 0xD8
-#define MARKER_EOI 0xD9
-#define MARKER_APP0 0xE0
-#define MARKER_APP1 0xE1
-/* APP2..APPE also carry metadata sometimes, we preserve them unless STRIP_ALL
- */
-#define MARKER_APP2 0xE2
-#define MARKER_APPE 0xEE
-#define MARKER_SOS                                                             \
-  0xDA /* Start of Scan: everything after is compressed data                   \
-        */
-
-/* ── TIFF / EXIF types ───────────────────────────────────────────────────── */
-#define TIFF_TYPE_BYTE 1
-#define TIFF_TYPE_ASCII 2
-#define TIFF_TYPE_SHORT 3
-#define TIFF_TYPE_LONG 4
-#define TIFF_TYPE_RATIONAL 5
-
-static unsigned int tiff_type_size(unsigned short type) {
-  switch (type) {
-  case TIFF_TYPE_BYTE:
-  case TIFF_TYPE_ASCII:
-    return 1;
-  case TIFF_TYPE_SHORT:
-    return 2;
-  case TIFF_TYPE_LONG:
-    return 4;
-  case TIFF_TYPE_RATIONAL:
-    return 8;
-  default:
-    return 1;
-  }
-}
-
-/* EXIF tag IDs we care about for the info display */
-#define TAG_IMAGE_WIDTH 0x0100
-#define TAG_IMAGE_HEIGHT 0x0101
-#define TAG_MAKE 0x010F
-#define TAG_MODEL 0x0110
-#define TAG_SOFTWARE 0x0131
-#define TAG_DATETIME 0x0132
-#define TAG_EXIF_IFD 0x8769
-#define TAG_GPS_IFD 0x8825
-/* GPS sub-tags */
-#define GPS_LATITUDE_REF 0x0001
-#define GPS_LATITUDE 0x0002
-#define GPS_LONGITUDE_REF 0x0003
-#define GPS_LONGITUDE 0x0004
-
-/* ── Internal structures ─────────────────────────────────────────────────── */
-
+/* ── TIFF context ────────────────────────────────────────────────────────── */
 typedef struct {
-  unsigned char *data; /* raw EXIF block (after "Exif\0\0") */
+  unsigned char *data;
   size_t size;
-  int little_endian; /* 1 = LE (Intel), 0 = BE (Motorola) */
+  int le;
 } TiffCtx;
 
-static unsigned short tiff_u16(const TiffCtx *ctx, unsigned int offset) {
-  if (offset + 2 > ctx->size)
+static unsigned short tu16(const TiffCtx *c, unsigned int o) {
+  if (o + 2 > c->size)
     return 0;
-  return ctx->little_endian ? read_le16(ctx->data + offset)
-                            : read_be16(ctx->data + offset);
+  return c->le ? read_le16(c->data + o) : read_be16(c->data + o);
+}
+static unsigned int tu32(const TiffCtx *c, unsigned int o) {
+  if (o + 4 > c->size)
+    return 0;
+  return c->le ? read_le32(c->data + o) : read_be32(c->data + o);
 }
 
-static unsigned int tiff_u32(const TiffCtx *ctx, unsigned int offset) {
-  if (offset + 4 > ctx->size)
-    return 0;
-  return ctx->little_endian ? read_le32(ctx->data + offset)
-                            : read_be32(ctx->data + offset);
-}
+/* ── EXIF info struct ────────────────────────────────────────────────────── */
+typedef struct {
+  char make[128], model[128], datetime[32], software[128];
+  unsigned int width, height;
+  int has_gps;
+  double gps_lat, gps_lon;
+  char gps_lat_ref[4], gps_lon_ref[4];
+} ExifInfo;
 
-/* Read a null-terminated ASCII tag value into buf (max buf_size bytes). */
-static void tiff_read_ascii(const TiffCtx *ctx, unsigned int offset,
-                            unsigned int count, char *buf, size_t buf_size) {
-  size_t n = (count < buf_size) ? count : buf_size - 1;
-  if (offset + n > ctx->size) {
+/* ── Read null-terminated ASCII tag ─────────────────────────────────────── */
+static void tiff_ascii(const TiffCtx *c, unsigned int off, unsigned int cnt,
+                       char *buf, size_t sz) {
+  size_t n = cnt < sz ? cnt : sz - 1;
+  if (off + n > c->size) {
     buf[0] = '\0';
     return;
   }
-  memcpy(buf, ctx->data + offset, n);
+  memcpy(buf, c->data + off, n);
   buf[n] = '\0';
 }
 
-/* Read rational (numerator/denominator) as double. */
-static double tiff_rational(const TiffCtx *ctx, unsigned int offset) {
-  unsigned int num = tiff_u32(ctx, offset);
-  unsigned int den = tiff_u32(ctx, offset + 4);
-  return (den == 0) ? 0.0 : (double)num / (double)den;
-}
-
-/* ── GPS coordinate helper ───────────────────────────────────────────────── */
-
-static double gps_dms_to_decimal(const TiffCtx *ctx, unsigned int offset,
-                                 unsigned int count) {
-  if (count < 3)
+/* ── GPS DMS → decimal ───────────────────────────────────────────────────── */
+static double gps_decimal(const TiffCtx *c, unsigned int off,
+                          unsigned int cnt) {
+  if (cnt < 3)
     return 0.0;
-  double deg = tiff_rational(ctx, offset);
-  double min = tiff_rational(ctx, offset + 8);
-  double sec = tiff_rational(ctx, offset + 16);
+  double deg = (double)tu32(c, off) / (double)tu32(c, off + 4);
+  double min = (double)tu32(c, off + 8) / (double)tu32(c, off + 12);
+  double sec = (double)tu32(c, off + 16) / (double)tu32(c, off + 20);
   return deg + min / 60.0 + sec / 3600.0;
 }
 
-/* ── IFD tag value resolution ────────────────────────────────────────────── */
-
-/*
- * For a tag entry at `entry_offset` in the TIFF block, return the absolute
- * offset of the actual value data. For values ≤4 bytes it's inline.
- */
-static unsigned int tag_value_offset(const TiffCtx *ctx,
-                                     unsigned int entry_offset,
-                                     unsigned short type, unsigned int count) {
-  unsigned int value_size = tiff_type_size(type) * count;
-  if (value_size <= 4) {
-    return entry_offset + 8; /* value is stored inline in the entry */
-  }
-  return tiff_u32(ctx, entry_offset + 8); /* value is at this offset */
+/* ── Tag value offset ────────────────────────────────────────────────────── */
+static unsigned int tag_voff(const TiffCtx *c, unsigned int eoff,
+                             unsigned short type, unsigned int cnt) {
+  static const unsigned int tsz[] = {0, 1, 1, 2, 4, 8};
+  unsigned int sz = (type < 6 ? tsz[type] : 1) * cnt;
+  return sz <= 4 ? eoff + 8 : tu32(c, eoff + 8);
 }
 
-/* ── Info structures ─────────────────────────────────────────────────────── */
-
-typedef struct {
-  char make[128];
-  char model[128];
-  char datetime[32];
-  char software[128];
-  unsigned int width;
-  unsigned int height;
-  int has_gps;
-  double gps_lat;
-  double gps_lon;
-  char gps_lat_ref[4];
-  char gps_lon_ref[4];
-} ExifInfo;
-
-/* ── IFD walker ──────────────────────────────────────────────────────────── */
-
-static void walk_gps_ifd(const TiffCtx *ctx, unsigned int ifd_offset,
-                         ExifInfo *info) {
-  if (ifd_offset + 2 > ctx->size)
+/* ── Walk GPS IFD ────────────────────────────────────────────────────────── */
+static void walk_gps(const TiffCtx *c, unsigned int off, ExifInfo *info) {
+  if (off + 2 > c->size)
     return;
-
-  unsigned short entry_count = tiff_u16(ctx, ifd_offset);
-  unsigned int entry_offset = ifd_offset + 2;
-
-  for (unsigned short i = 0; i < entry_count; i++, entry_offset += 12) {
-    if (entry_offset + 12 > ctx->size)
+  unsigned short n = tu16(c, off);
+  off += 2;
+  for (unsigned short i = 0; i < n; i++, off += 12) {
+    if (off + 12 > c->size)
       break;
-
-    unsigned short tag = tiff_u16(ctx, entry_offset);
-    unsigned short type = tiff_u16(ctx, entry_offset + 2);
-    unsigned int count = tiff_u32(ctx, entry_offset + 4);
-    unsigned int voff = tag_value_offset(ctx, entry_offset, type, count);
-
+    unsigned short tag = tu16(c, off);
+    unsigned short type = tu16(c, off + 2);
+    unsigned int cnt = tu32(c, off + 4);
+    unsigned int vo = tag_voff(c, off, type, cnt);
     switch (tag) {
-    case GPS_LATITUDE_REF:
-      tiff_read_ascii(ctx, voff, count, info->gps_lat_ref,
-                      sizeof(info->gps_lat_ref));
+    case 0x0001:
+      tiff_ascii(c, vo, cnt, info->gps_lat_ref, sizeof(info->gps_lat_ref));
       break;
-    case GPS_LATITUDE:
-      info->gps_lat = gps_dms_to_decimal(ctx, voff, count);
+    case 0x0002:
+      info->gps_lat = gps_decimal(c, vo, cnt);
       info->has_gps = 1;
       break;
-    case GPS_LONGITUDE_REF:
-      tiff_read_ascii(ctx, voff, count, info->gps_lon_ref,
-                      sizeof(info->gps_lon_ref));
+    case 0x0003:
+      tiff_ascii(c, vo, cnt, info->gps_lon_ref, sizeof(info->gps_lon_ref));
       break;
-    case GPS_LONGITUDE:
-      info->gps_lon = gps_dms_to_decimal(ctx, voff, count);
+    case 0x0004:
+      info->gps_lon = gps_decimal(c, vo, cnt);
       break;
     }
   }
 }
 
-static void walk_ifd0(const TiffCtx *ctx, unsigned int ifd_offset,
-                      ExifInfo *info) {
-  if (ifd_offset + 2 > ctx->size)
+/* ── Walk IFD0 ───────────────────────────────────────────────────────────── */
+static void walk_ifd0(const TiffCtx *c, unsigned int off, ExifInfo *info) {
+  if (off + 2 > c->size)
     return;
-
-  unsigned short entry_count = tiff_u16(ctx, ifd_offset);
-  unsigned int entry_offset = ifd_offset + 2;
-
-  for (unsigned short i = 0; i < entry_count; i++, entry_offset += 12) {
-    if (entry_offset + 12 > ctx->size)
+  unsigned short n = tu16(c, off);
+  off += 2;
+  for (unsigned short i = 0; i < n; i++, off += 12) {
+    if (off + 12 > c->size)
       break;
-
-    unsigned short tag = tiff_u16(ctx, entry_offset);
-    unsigned short type = tiff_u16(ctx, entry_offset + 2);
-    unsigned int count = tiff_u32(ctx, entry_offset + 4);
-    unsigned int voff = tag_value_offset(ctx, entry_offset, type, count);
-
+    unsigned short tag = tu16(c, off);
+    unsigned short type = tu16(c, off + 2);
+    unsigned int cnt = tu32(c, off + 4);
+    unsigned int vo = tag_voff(c, off, type, cnt);
     switch (tag) {
-    case TAG_MAKE:
-      tiff_read_ascii(ctx, voff, count, info->make, sizeof(info->make));
+    case 0x010F:
+      tiff_ascii(c, vo, cnt, info->make, sizeof(info->make));
       break;
-    case TAG_MODEL:
-      tiff_read_ascii(ctx, voff, count, info->model, sizeof(info->model));
+    case 0x0110:
+      tiff_ascii(c, vo, cnt, info->model, sizeof(info->model));
       break;
-    case TAG_DATETIME:
-      tiff_read_ascii(ctx, voff, count, info->datetime, sizeof(info->datetime));
+    case 0x0132:
+      tiff_ascii(c, vo, cnt, info->datetime, sizeof(info->datetime));
       break;
-    case TAG_SOFTWARE:
-      tiff_read_ascii(ctx, voff, count, info->software, sizeof(info->software));
+    case 0x0131:
+      tiff_ascii(c, vo, cnt, info->software, sizeof(info->software));
       break;
-    case TAG_IMAGE_WIDTH:
-      info->width =
-          (type == TIFF_TYPE_SHORT) ? tiff_u16(ctx, voff) : tiff_u32(ctx, voff);
+    case 0x0100:
+      info->width = (type == 3) ? tu16(c, vo) : tu32(c, vo);
       break;
-    case TAG_IMAGE_HEIGHT:
-      info->height =
-          (type == TIFF_TYPE_SHORT) ? tiff_u16(ctx, voff) : tiff_u32(ctx, voff);
+    case 0x0101:
+      info->height = (type == 3) ? tu16(c, vo) : tu32(c, vo);
       break;
     case TAG_GPS_IFD:
-      walk_gps_ifd(ctx, tiff_u32(ctx, entry_offset + 8), info);
+      walk_gps(c, tu32(c, off + 8), info);
       break;
     }
   }
 }
 
-/* ── Parse EXIF APP1 segment ─────────────────────────────────────────────── */
-
-static int parse_app1_exif(const unsigned char *seg_data, size_t seg_len,
-                           ExifInfo *info) {
-  /* APP1 segment starts with "Exif\0\0" (6 bytes) */
-  if (seg_len < 6)
+/* ── Parse APP1 EXIF segment ─────────────────────────────────────────────── */
+static int parse_exif(const unsigned char *seg, size_t len, ExifInfo *info) {
+  if (len < 6 || memcmp(seg, "Exif\0\0", 6) != 0)
     return -1;
-  if (memcmp(seg_data, "Exif\0\0", 6) != 0)
+  TiffCtx c;
+  c.data = (unsigned char *)seg + 6;
+  c.size = len - 6;
+  if (c.size < 8)
     return -1;
-
-  TiffCtx ctx;
-  ctx.data = (unsigned char *)seg_data + 6;
-  ctx.size = seg_len - 6;
-
-  if (ctx.size < 8)
+  if (c.data[0] == 'I' && c.data[1] == 'I')
+    c.le = 1;
+  else if (c.data[0] == 'M' && c.data[1] == 'M')
+    c.le = 0;
+  else
     return -1;
-
-  /* TIFF byte order: "II" = little-endian, "MM" = big-endian */
-  if (ctx.data[0] == 'I' && ctx.data[1] == 'I') {
-    ctx.little_endian = 1;
-  } else if (ctx.data[0] == 'M' && ctx.data[1] == 'M') {
-    ctx.little_endian = 0;
-  } else {
-    return -1; /* not valid TIFF */
-  }
-
-  /* Offset to IFD0 is at bytes 4-7 in the TIFF block */
-  unsigned int ifd0_offset = tiff_u32(&ctx, 4);
-  walk_ifd0(&ctx, ifd0_offset, info);
+  walk_ifd0(&c, tu32(&c, 4), info);
   return 0;
 }
 
-/* ── Load entire file into a heap buffer ─────────────────────────────────── */
+/* ── Zero out GPS SubIFD pointer inside APP1 (--strip gps) ──────────────── */
+static void strip_gps(unsigned char *seg, size_t len) {
+  if (len < 6 || memcmp(seg, "Exif\0\0", 6) != 0)
+    return;
+  TiffCtx c;
+  c.data = seg + 6;
+  c.size = len - 6;
+  if (c.size < 8)
+    return;
+  c.le = (c.data[0] == 'I');
+  unsigned int off = tu32(&c, 4);
+  if (off + 2 > c.size)
+    return;
+  unsigned short n = tu16(&c, off);
+  off += 2;
+  for (unsigned short i = 0; i < n; i++, off += 12) {
+    if (off + 12 > c.size)
+      break;
+    if (tu16(&c, off) == TAG_GPS_IFD) {
+      c.data[off] = 0x00;
+      c.data[off + 1] = 0x00;
+    }
+  }
+}
 
-static unsigned char *load_file(const char *path, size_t *out_size) {
+/* ── Load file ───────────────────────────────────────────────────────────── */
+static unsigned char *load_file(const char *path, size_t *sz) {
   FILE *f = fopen(path, "rb");
   if (!f)
     return NULL;
-
-  if (fseek(f, 0, SEEK_END) != 0) {
-    fclose(f);
-    return NULL;
-  }
+  fseek(f, 0, SEEK_END);
   long len = ftell(f);
+  rewind(f);
   if (len <= 0) {
     fclose(f);
     return NULL;
   }
-  rewind(f);
-
   unsigned char *buf = (unsigned char *)malloc((size_t)len);
   if (!buf) {
     fclose(f);
     return NULL;
   }
-
   if (fread(buf, 1, (size_t)len, f) != (size_t)len) {
     free(buf);
     fclose(f);
     return NULL;
   }
   fclose(f);
-  *out_size = (size_t)len;
+  *sz = (size_t)len;
   return buf;
 }
 
-/* ── Public: jpeg_print_info ─────────────────────────────────────────────── */
+/* ── Atomic write ────────────────────────────────────────────────────────── */
+static int atomic_write(const char *dst, const unsigned char *data, size_t sz) {
+  char tmp[4096];
+  snprintf(tmp, sizeof(tmp), "%s.ghostim_tmp", dst);
+  FILE *f = fopen(tmp, "wb");
+  if (!f)
+    return -1;
+  fwrite(data, 1, sz, f);
+  fclose(f);
+#ifdef _WIN32
+  if (!MoveFileExA(tmp, dst, MOVEFILE_REPLACE_EXISTING)) {
+    remove(tmp);
+    return -1;
+  }
+#else
+  if (rename(tmp, dst) != 0) {
+    FILE *in = fopen(tmp, "rb"), *out = fopen(dst, "wb");
+    char b[65536];
+    size_t n;
+    while (in && out && (n = fread(b, 1, sizeof(b), in)) > 0)
+      fwrite(b, 1, n, out);
+    if (in)
+      fclose(in);
+    if (out)
+      fclose(out);
+    remove(tmp);
+  }
+#endif
+  return 0;
+}
 
+/* ── Segment drop logic ──────────────────────────────────────────────────── */
+static int seg_drop(unsigned char marker) {
+  if (marker == MARKER_APP1)
+    return 1; /* EXIF/XMP       */
+  if (marker == MARKER_APP0)
+    return 1; /* JFIF header    */
+  if (marker == MARKER_COM)
+    return 1; /* Comments       */
+  if (marker >= 0xE3 && marker <= 0xEF)
+    return 1; /* APP3-APPF */
+  return 0;
+}
+
+/* ── APPEND macro ────────────────────────────────────────────────────────── */
+#define APPEND(dst, dsz, dcap, src, n)                                         \
+  do {                                                                         \
+    size_t _n = (n);                                                           \
+    if ((dsz) + _n > (dcap)) {                                                 \
+      (dcap) = ((dsz) + _n) * 2;                                               \
+      unsigned char *_r = (unsigned char *)realloc((dst), (dcap));             \
+      if (!_r) {                                                               \
+        free(buf);                                                             \
+        free(out);                                                             \
+        return -1;                                                             \
+      }                                                                        \
+      (dst) = _r;                                                              \
+    }                                                                          \
+    memcpy((dst) + (dsz), (src), _n);                                          \
+    (dsz) += _n;                                                               \
+  } while (0)
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * PUBLIC: jpeg_print_info
+ * ════════════════════════════════════════════════════════════════════════════
+ */
 int jpeg_print_info(const char *path, int verbose) {
   size_t file_size = 0;
   unsigned char *buf = load_file(path, &file_size);
@@ -340,380 +319,311 @@ int jpeg_print_info(const char *path, int verbose) {
     fprintf(stderr, "Error: cannot open '%s'.\n", path);
     return -1;
   }
-
-  /* Verify SOI */
   if (file_size < 2 || buf[0] != 0xFF || buf[1] != MARKER_SOI) {
-    fprintf(stderr, "Error: '%s' is not a valid JPEG file.\n", path);
+    fprintf(stderr, "Error: '%s' is not a valid JPEG.\n", path);
     free(buf);
     return -1;
   }
 
   ExifInfo info;
   memset(&info, 0, sizeof(info));
-  int found_exif = 0;
-  int found_jfif = 0;
-  unsigned int sof_width = 0, sof_height = 0;
+  int found_exif = 0, found_jfif = 0;
+  unsigned int sof_w = 0, sof_h = 0;
 
-  /* Walk markers */
   size_t pos = 2;
   while (pos + 3 < file_size) {
     if (buf[pos] != 0xFF)
       break;
-
-    unsigned char marker = buf[pos + 1];
-
-    if (marker == MARKER_SOI) {
+    unsigned char m = buf[pos + 1];
+    if (m == MARKER_SOI) {
       pos += 2;
       continue;
     }
-    if (marker == MARKER_EOI)
+    if (m == MARKER_EOI)
       break;
-
-    /* Pad bytes (FF FF ... before real marker) */
-    if (marker == 0xFF) {
+    if (m == 0xFF) {
       pos++;
       continue;
     }
-
-    unsigned short seg_len = read_be16(buf + pos + 2);
-    if (seg_len < 2)
+    unsigned short slen = read_be16(buf + pos + 2);
+    if (slen < 2)
       break;
-
-    unsigned char *seg_data = buf + pos + 4;
-    size_t seg_body = (size_t)(seg_len - 2);
-
-    /* APP0 = JFIF marker */
-    if (marker == MARKER_APP0 && seg_body >= 5 &&
-        memcmp(seg_data, "JFIF", 4) == 0) {
+    unsigned char *sd = buf + pos + 4;
+    size_t sb = (size_t)(slen - 2);
+    if (m == MARKER_APP0 && sb >= 4 && memcmp(sd, "JFIF", 4) == 0)
       found_jfif = 1;
-    }
-
-    if (marker == MARKER_APP1) {
-      if (parse_app1_exif(seg_data, seg_body, &info) == 0)
-        found_exif = 1;
-    }
-
-    /* SOF markers (C0..C3, C5..C7, C9..CB, CD..CF) carry image dimensions */
-    if ((marker >= 0xC0 && marker <= 0xC3) ||
-        (marker >= 0xC5 && marker <= 0xC7) ||
-        (marker >= 0xC9 && marker <= 0xCB) ||
-        (marker >= 0xCD && marker <= 0xCF)) {
-      if (seg_body >= 5) {
-        /* SOF: 1 byte precision, 2 bytes height, 2 bytes width */
-        sof_height = read_be16(seg_data + 1);
-        sof_width = read_be16(seg_data + 3);
+    if (m == MARKER_APP1 && parse_exif(sd, sb, &info) == 0)
+      found_exif = 1;
+    if ((m >= 0xC0 && m <= 0xC3) || (m >= 0xC5 && m <= 0xC7) ||
+        (m >= 0xC9 && m <= 0xCB) || (m >= 0xCD && m <= 0xCF)) {
+      if (sb >= 5) {
+        sof_h = read_be16(sd + 1);
+        sof_w = read_be16(sd + 3);
       }
     }
-
-    if (marker == MARKER_SOS)
+    if (m == MARKER_SOS)
       break;
-
-    pos += 2 + (size_t)seg_len;
+    pos += 2 + (size_t)slen;
   }
-
   free(buf);
 
-  /* ── Print report ── */
-  double size_mb = (double)file_size / (1024.0 * 1024.0);
-  printf("\n");
-  printf("+==============================================+\n");
-  printf("|          JPEG Image Report                   |\n");
+  double mb = (double)file_size / 1048576.0;
+  printf("\n+==============================================+\n");
+  printf("|          JPEG Image Report                  |\n");
   printf("+==============================================+\n");
   printf("| File   : %-34s|\n", path);
-  printf("| Size   : %.2f MB                             |\n", size_mb);
+  printf("| Size   : %.2f MB                            |\n", mb);
   printf("| Format : %-34s|\n", found_jfif   ? "JFIF (standard JPEG)"
                                 : found_exif ? "EXIF JPEG"
                                              : "JPEG");
-  if (sof_width && sof_height)
-    printf("| Image  : %u x %u px%*s|\n", sof_width, sof_height,
-           (int)(27 - snprintf(NULL, 0, "%u x %u px", sof_width, sof_height)),
-           " ");
+  if (sof_w && sof_h)
+    printf("| Image  : %u x %u px%*s|\n", sof_w, sof_h,
+           (int)(27 - snprintf(NULL, 0, "%u x %u px", sof_w, sof_h)), " ");
   printf("+----------------------------------------------+\n");
-
   if (!found_exif) {
-    printf("| Metadata : None — this image is already      |\n");
-    printf("|            clean. No action needed.          |\n");
-    printf("+----------------------------------------------+\n\n");
-    return 0;
-  }
-
-  printf("| Metadata found:                              |\n");
-  if (info.make[0])
-    printf("|   Make     : %-30s|\n", info.make);
-  if (info.model[0])
-    printf("|   Model    : %-30s|\n", info.model);
-  if (info.datetime[0])
-    printf("|   DateTime : %-30s|\n", info.datetime);
-  if (info.software[0])
-    printf("|   Software : %-30s|\n", info.software);
-
-  if (info.has_gps) {
+    printf("| Metadata : None — already clean.             |\n");
+  } else {
+    printf("| Metadata found:                              |\n");
+    if (info.make[0])
+      printf("|   Make     : %-30s|\n", info.make);
+    if (info.model[0])
+      printf("|   Model    : %-30s|\n", info.model);
+    if (info.datetime[0])
+      printf("|   DateTime : %-30s|\n", info.datetime);
+    if (info.software[0])
+      printf("|   Software : %-30s|\n", info.software);
+    if (info.has_gps) {
+      printf("+----------------------------------------------+\n");
+      printf("| !! GPS LOCATION DATA FOUND !!                |\n");
+      printf("|   Lat : %8.4f %s  Lon : %8.4f %s%*s|\n", info.gps_lat,
+             info.gps_lat_ref, info.gps_lon, info.gps_lon_ref,
+             (int)(2 - snprintf(NULL, 0, "%s", info.gps_lon_ref)), " ");
+    }
     printf("+----------------------------------------------+\n");
-    printf("| !! GPS LOCATION DATA FOUND !!                |\n");
-    printf("|   Latitude  : %8.4f %s%*s|\n", info.gps_lat, info.gps_lat_ref,
-           (int)(21 -
-                 snprintf(NULL, 0, "%8.4f %s", info.gps_lat, info.gps_lat_ref)),
-           " ");
-    printf("|   Longitude : %8.4f %s%*s|\n", info.gps_lon, info.gps_lon_ref,
-           (int)(21 -
-                 snprintf(NULL, 0, "%8.4f %s", info.gps_lon, info.gps_lon_ref)),
-           " ");
-    printf("|   Run: ghostim clean <file> --strip gps     |\n");
+    printf("| Run: ghostim clean <file> to remove all     |\n");
   }
-
-  printf("+----------------------------------------------+\n");
-  printf("| Run: ghostim clean <file> to remove all     |\n");
   printf("+----------------------------------------------+\n\n");
-
   (void)verbose;
   return 0;
 }
 
-/* ── Segment filtering logic ─────────────────────────────────────────────── */
-
-/*
- * JPEG marker reference for filtering decisions:
- *
- *  APP0  (E0) — JFIF header. Safe to remove in --optimize (no image data).
- *  APP1  (E1) — EXIF / XMP. Always removed (contains privacy metadata).
- *  APP2  (E2) — ICC color profile or FlashPix. KEEP — affects color rendering.
- *  APP3..APPE — Various vendor extensions. Removed in --optimize.
- *  APPF  (EF) — Usually empty or vendor. Removed in --optimize.
- *  COM   (FE) — Text comment. Removed in --optimize.
- *  DQT   (DB) — Quantization tables. KEEP — required for decoding.
- *  DHT   (C4) — Huffman tables. KEEP — required for decoding.
- *  SOF*  (C0-CF) — Start of Frame. KEEP — image dimensions/format.
- *  SOS   (DA) — Start of Scan. KEEP — compressed image data follows.
- *  EOI   (D9) — End of image. KEEP.
- *
- * clean always drops all non-image segments:
- * APP0, APP1, APP3-APPF, COM. Keeps APP2 (ICC), DQT, DHT, SOF*, SOS, EOI.
- *                 Keep APP2 (ICC profile), DQT, DHT, SOF*, SOS, EOI.
+/* ════════════════════════════════════════════════════════════════════════════
+ * PUBLIC: jpeg_clean — lossless path
+ * ════════════════════════════════════════════════════════════════════════════
  */
-
-#define MARKER_COM 0xFE /* Comment segment */
-
-static int segment_should_drop(unsigned char marker) {
-  if (marker == MARKER_APP1)
-    return 1; /* EXIF / XMP       */
-  if (marker == MARKER_APP0)
-    return 1; /* JFIF header      */
-  if (marker == MARKER_COM)
-    return 1; /* Text comments    */
-  if (marker >= 0xE3 && marker <= 0xEF)
-    return 1; /* APP3..APPF       */
-  return 0;
-}
-
-/*
- * Zero out the GPS SubIFD pointer inside an APP1/EXIF segment (--strip gps).
- * seg_data points to the raw segment body (after marker+length bytes).
- */
-static void strip_gps_from_app1(unsigned char *seg_data, size_t seg_len) {
-  if (seg_len < 6 || memcmp(seg_data, "Exif\0\0", 6) != 0)
-    return;
-
-  TiffCtx ctx;
-  ctx.data = seg_data + 6;
-  ctx.size = seg_len - 6;
-  if (ctx.size < 8)
-    return;
-
-  ctx.little_endian = (ctx.data[0] == 'I');
-
-  unsigned int ifd0_offset = tiff_u32(&ctx, 4);
-  if (ifd0_offset + 2 > ctx.size)
-    return;
-
-  unsigned short entry_count = tiff_u16(&ctx, ifd0_offset);
-  unsigned int entry_off = ifd0_offset + 2;
-
-  for (unsigned short i = 0; i < entry_count; i++, entry_off += 12) {
-    if (entry_off + 12 > ctx.size)
-      break;
-    unsigned short tag = tiff_u16(&ctx, entry_off);
-    if (tag == TAG_GPS_IFD) {
-      ctx.data[entry_off] = 0x00;
-      ctx.data[entry_off + 1] = 0x00;
-    }
-  }
-}
-
-/* ── Public: jpeg_clean ──────────────────────────────────────────────────── */
-
-int jpeg_clean(const char *src, const char *dst, StripMode strip_mode,
-               int dry_run, int verbose) {
+static int jpeg_lossless(const char *src, const char *dst, StripMode strip_mode,
+                         int dry_run, int verbose) {
   size_t file_size = 0;
   unsigned char *buf = load_file(src, &file_size);
   if (!buf) {
     fprintf(stderr, "Error: cannot open '%s'.\n", src);
     return -1;
   }
-
   if (file_size < 2 || buf[0] != 0xFF || buf[1] != MARKER_SOI) {
     fprintf(stderr, "Error: '%s' is not a valid JPEG.\n", src);
     free(buf);
     return -1;
   }
 
-  /* Build output buffer — starts at file_size capacity, shrinks as we drop */
-  size_t out_cap = file_size;
-  size_t out_size = 0;
+  size_t out_cap = file_size, out_size = 0;
   unsigned char *out = (unsigned char *)malloc(out_cap);
   if (!out) {
     free(buf);
     return -1;
   }
 
-#define APPEND(ptr, n)                                                         \
-  do {                                                                         \
-    size_t _n = (n);                                                           \
-    if (out_size + _n > out_cap) {                                             \
-      out_cap = (out_size + _n) * 2;                                           \
-      unsigned char *_r = (unsigned char *)realloc(out, out_cap);              \
-      if (!_r) {                                                               \
-        free(buf);                                                             \
-        free(out);                                                             \
-        return -1;                                                             \
-      }                                                                        \
-      out = _r;                                                                \
-    }                                                                          \
-    memcpy(out + out_size, (ptr), _n);                                         \
-    out_size += _n;                                                            \
-  } while (0)
+  APPEND(out, out_size, out_cap, buf, 2); /* SOI */
 
-  /* Always keep SOI */
-  APPEND(buf, 2);
-
-  long removed_bytes = 0;
-  int removed_count = 0;
-
+  long removed = 0;
+  int removed_n = 0;
   size_t pos = 2;
   while (pos + 3 < file_size) {
     if (buf[pos] != 0xFF) {
-      /* Lost sync or raw entropy data outside SOS — copy remainder */
-      APPEND(buf + pos, file_size - pos);
+      APPEND(out, out_size, out_cap, buf + pos, file_size - pos);
       break;
     }
-
-    unsigned char marker = buf[pos + 1];
-
-    /* Markers with no payload */
-    if (marker == MARKER_SOI) {
-      APPEND(buf + pos, 2);
+    unsigned char m = buf[pos + 1];
+    if (m == MARKER_EOI) {
+      APPEND(out, out_size, out_cap, buf + pos, 2);
+      break;
+    }
+    if (m == MARKER_SOI) {
+      APPEND(out, out_size, out_cap, buf + pos, 2);
       pos += 2;
       continue;
     }
-    if (marker == MARKER_EOI) {
-      APPEND(buf + pos, 2);
-      break;
-    }
-    /* Skip pad bytes (0xFF stuffing) */
-    if (marker == 0xFF) {
+    if (m == 0xFF) {
       pos++;
       continue;
     }
-
     if (pos + 3 >= file_size)
       break;
-    unsigned short seg_len = read_be16(buf + pos + 2);
-    if (seg_len < 2)
+    unsigned short slen = read_be16(buf + pos + 2);
+    if (slen < 2)
       break;
 
-    int drop = segment_should_drop(marker);
-
-    /* --strip gps: keep APP1 but patch GPS pointer out */
-    if (marker == MARKER_APP1 && strip_mode == STRIP_GPS) {
-      drop = 0; /* override: keep the segment, just patch it */
-    }
+    int drop = seg_drop(m);
+    if (m == MARKER_APP1 && strip_mode == STRIP_GPS)
+      drop = 0;
 
     if (drop) {
       if (verbose)
-        printf("  [remove] marker=FF%02X  size=%u bytes\n", marker,
-               (unsigned)(2 + seg_len));
-      removed_bytes += 2 + seg_len;
-      removed_count++;
+        printf("  [remove] FF%02X  %u bytes\n", m, (unsigned)(2 + slen));
+      removed += 2 + slen;
+      removed_n++;
+    } else if (m == MARKER_APP1 && strip_mode == STRIP_GPS) {
+      APPEND(out, out_size, out_cap, buf + pos, 4);
+      size_t bs = out_size;
+      size_t bl = (size_t)(slen - 2);
+      APPEND(out, out_size, out_cap, buf + pos + 4, bl);
+      strip_gps(out + bs, bl);
+      if (verbose)
+        printf("  [patch]  GPS removed from APP1\n");
     } else {
-      if (marker == MARKER_APP1 && strip_mode == STRIP_GPS) {
-        /* Copy marker+length, then body, then patch GPS in-place */
-        APPEND(buf + pos, 4);
-        size_t body_start = out_size;
-        size_t body_len = (size_t)(seg_len - 2);
-        APPEND(buf + pos + 4, body_len);
-        strip_gps_from_app1(out + body_start, body_len);
-        if (verbose)
-          printf("  [patch]  GPS removed from APP1\n");
-      } else {
-        APPEND(buf + pos, 2 + (size_t)seg_len);
-      }
+      APPEND(out, out_size, out_cap, buf + pos, 2 + (size_t)slen);
     }
-
-    /* SOS: everything after is compressed scan data — copy verbatim */
-    if (marker == MARKER_SOS) {
-      pos += 2 + (size_t)seg_len;
-      APPEND(buf + pos, file_size - pos);
+    if (m == MARKER_SOS) {
+      pos += 2 + (size_t)slen;
+      APPEND(out, out_size, out_cap, buf + pos, file_size - pos);
       break;
     }
-
-    pos += 2 + (size_t)seg_len;
+    pos += 2 + (size_t)slen;
   }
-
-#undef APPEND
-
   free(buf);
 
-  /* ── Report ── */
-  if (dry_run || verbose) {
-    double saved_kb = (double)removed_bytes / 1024.0;
-    double pct = (file_size > 0)
-                     ? (double)removed_bytes / (double)file_size * 100.0
-                     : 0.0;
-    if (dry_run) {
-      printf("[dry-run] %s\n", src);
-      printf("          Would remove %d segment(s), saving %.1f KB (%.1f%%)\n",
-             removed_count, saved_kb, pct);
-      free(out);
-      return 0;
-    } else {
-      printf("  Removed %d segment(s), saved %.1f KB (%.1f%%)\n", removed_count,
-             saved_kb, pct);
+  double saved_kb = (double)removed / 1024.0;
+  double pct =
+      file_size > 0 ? (double)removed / (double)file_size * 100.0 : 0.0;
+  if (dry_run) {
+    printf("[dry-run] lossless  %s\n", src);
+    printf("          Would remove %d segment(s), saving %.1f KB (%.1f%%)\n",
+           removed_n, saved_kb, pct);
+    free(out);
+    return 0;
+  }
+  if (verbose)
+    printf("  Removed %d segment(s), saved %.1f KB (%.1f%%)\n", removed_n,
+           saved_kb, pct);
+
+  int r = atomic_write(dst, out, out_size);
+  free(out);
+  return r;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+ * PUBLIC: jpeg_clean — lossy path (libjpeg-turbo)
+ * ════════════════════════════════════════════════════════════════════════════
+ */
+static int jpeg_lossy(const char *src, const char *dst, int quality,
+                      int dry_run, int verbose) {
+  /* ── Decode ── */
+  struct jpeg_decompress_struct dec;
+  struct jpeg_error_mgr jerr_dec;
+  dec.err = jpeg_std_error(&jerr_dec);
+  jpeg_create_decompress(&dec);
+
+  FILE *fin = fopen(src, "rb");
+  if (!fin) {
+    fprintf(stderr, "Error: cannot open '%s'.\n", src);
+    return -1;
+  }
+  jpeg_stdio_src(&dec, fin);
+  jpeg_read_header(&dec, TRUE);
+
+  dec.out_color_space = JCS_RGB;
+  jpeg_start_decompress(&dec);
+
+  int width = (int)dec.output_width;
+  int height = (int)dec.output_height;
+  int components = dec.output_components; /* 3 for RGB */
+  size_t row_stride = (size_t)(width * components);
+  size_t img_size = row_stride * (size_t)height;
+
+  unsigned char *pixels = (unsigned char *)malloc(img_size);
+  if (!pixels) {
+    jpeg_destroy_decompress(&dec);
+    fclose(fin);
+    return -1;
+  }
+
+  while (dec.output_scanline < dec.output_height) {
+    unsigned char *row = pixels + dec.output_scanline * row_stride;
+    jpeg_read_scanlines(&dec, &row, 1);
+  }
+  jpeg_finish_decompress(&dec);
+  jpeg_destroy_decompress(&dec);
+  fclose(fin);
+
+  if (dry_run) {
+    printf("[dry-run] lossy  %s  (quality=%d)\n", src, quality);
+    printf("          Would re-encode %dx%d image — actual size depends on "
+           "content\n",
+           width, height);
+    free(pixels);
+    return 0;
+  }
+
+  /* ── Encode ── */
+  struct jpeg_compress_struct enc;
+  struct jpeg_error_mgr jerr_enc;
+  enc.err = jpeg_std_error(&jerr_enc);
+  jpeg_create_compress(&enc);
+
+  unsigned char *out_buf = NULL;
+  unsigned long out_size = 0;
+  jpeg_mem_dest(&enc, &out_buf, &out_size);
+
+  enc.image_width = (JDIMENSION)width;
+  enc.image_height = (JDIMENSION)height;
+  enc.input_components = components;
+  enc.in_color_space = JCS_RGB;
+  jpeg_set_defaults(&enc);
+  jpeg_set_quality(&enc, quality, TRUE);
+
+  /* 4:2:0 below quality 90, 4:4:4 above — better detail at high quality */
+  if (quality >= 90) {
+    enc.comp_info[0].h_samp_factor = 1;
+    enc.comp_info[0].v_samp_factor = 1;
+  }
+
+  jpeg_start_compress(&enc, TRUE);
+  while (enc.next_scanline < enc.image_height) {
+    unsigned char *row = pixels + enc.next_scanline * row_stride;
+    jpeg_write_scanlines(&enc, &row, 1);
+  }
+  jpeg_finish_compress(&enc);
+  jpeg_destroy_compress(&enc);
+  free(pixels);
+
+  double before_kb = 0.0;
+  { /* get original size for report */
+    FILE *tmp = fopen(src, "rb");
+    if (tmp) {
+      fseek(tmp, 0, SEEK_END);
+      before_kb = (double)ftell(tmp) / 1024.0;
+      fclose(tmp);
     }
   }
+  double after_kb = (double)out_size / 1024.0;
+  double saved_pct =
+      before_kb > 0 ? (before_kb - after_kb) / before_kb * 100.0 : 0.0;
 
-  /* Write atomically: temp file → rename */
-  char tmp_path[4096];
-  snprintf(tmp_path, sizeof(tmp_path), "%s.ghostim_tmp", dst);
+  if (verbose)
+    printf("  Lossy re-encode quality=%d: %.1f KB → %.1f KB (%.1f%% smaller)\n",
+           quality, before_kb, after_kb, saved_pct);
 
-  FILE *f = fopen(tmp_path, "wb");
-  if (!f) {
-    fprintf(stderr, "Error: cannot write '%s'.\n", tmp_path);
-    free(out);
-    return -1;
-  }
-  fwrite(out, 1, out_size, f);
-  fclose(f);
-  free(out);
+  int r = atomic_write(dst, out_buf, (size_t)out_size);
+  free(out_buf);
+  return r;
+}
 
-#ifdef _WIN32
-  if (!MoveFileExA(tmp_path, dst, MOVEFILE_REPLACE_EXISTING)) {
-    fprintf(stderr, "Error: cannot replace '%s'.\n", dst);
-    return -1;
-  }
-#else
-  if (rename(tmp_path, dst) != 0) {
-    FILE *in = fopen(tmp_path, "rb");
-    FILE *o = fopen(dst, "wb");
-    char rb[65536];
-    size_t n;
-    while (in && o && (n = fread(rb, 1, sizeof(rb), in)) > 0)
-      fwrite(rb, 1, n, o);
-    if (in)
-      fclose(in);
-    if (o)
-      fclose(o);
-    remove(tmp_path);
-  }
-#endif
-
-  return 0;
+/* ════════════════════════════════════════════════════════════════════════════
+ * PUBLIC: jpeg_clean — dispatcher
+ * ════════════════════════════════════════════════════════════════════════════
+ */
+int jpeg_clean(const char *src, const char *dst, StripMode strip_mode,
+               OptMode opt_mode, int quality, int dry_run, int verbose) {
+  if (opt_mode == OPT_LOSSY)
+    return jpeg_lossy(src, dst, quality, dry_run, verbose);
+  return jpeg_lossless(src, dst, strip_mode, dry_run, verbose);
 }

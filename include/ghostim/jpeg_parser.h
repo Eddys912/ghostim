@@ -7,18 +7,18 @@
 int jpeg_print_info(const char *path, int verbose);
 
 /*
- * Write a cleaned copy of src to dst.
+ * Clean and optionally optimize a JPEG file.
  *
- * Removes ALL non-image segments: EXIF, JFIF/APP0, embedded thumbnails,
- * comments (COM), vendor APP segments (APP3-APPF).
- * APP2 (ICC color profile) is preserved — it affects color rendering.
- * Compressed pixel data (DQT, DHT, SOF*, SOS) is never touched.
+ * Lossless (OPT_LOSSLESS):
+ *   Removes all non-image segments (EXIF, APP0, comments, vendor APPs).
+ *   Pixel data is copied verbatim — no quality loss whatsoever.
  *
- * strip_mode controls EXIF handling:
- *   STRIP_ALL — drop the entire EXIF segment (default).
- *   STRIP_GPS — keep EXIF but zero out the GPS SubIFD pointer.
+ * Lossy (OPT_LOSSY):
+ *   Decodes the image fully via libjpeg-turbo, strips all metadata,
+ *   then re-encodes at `quality` (1-100). Maximum size reduction.
+ *   Uses 4:2:0 chroma subsampling for quality < 90, 4:4:4 above.
  */
 int jpeg_clean(const char *src, const char *dst, StripMode strip_mode,
-               int dry_run, int verbose);
+               OptMode opt_mode, int quality, int dry_run, int verbose);
 
 #endif /* GHOSTIM_JPEG_PARSER_H */
