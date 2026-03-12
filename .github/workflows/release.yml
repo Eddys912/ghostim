@@ -6,7 +6,7 @@ on:
       - "v*.*.*"
 
 jobs:
-  # ── Linux ─────────────────────────────────────────────────────────────────
+  # ── Linux ──────────────────────────────────────────────────────────────────
   linux:
     runs-on: ubuntu-22.04
     steps:
@@ -15,7 +15,10 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y libjpeg-turbo8-dev libpng-dev libwebp-dev
+          sudo apt-get install -y \
+            libjpeg-turbo8-dev \
+            libpng-dev \
+            libwebp-dev
 
       - name: Build
         run: |
@@ -29,25 +32,33 @@ jobs:
           name: ghostim-linux-x86_64
           path: ghostim-linux-x86_64
 
-  # ── macOS (universal: Intel + Apple Silicon) ──────────────────────────────
+  # ── macOS (universal: Intel + Apple Silicon) ───────────────────────────────
   macos:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: brew install jpeg-turbo libpng webp pkg-config
+        run: brew install jpeg-turbo libpng webp
 
       - name: Build x86_64
+        env:
+          # Homebrew on Apple Silicon is in /opt/homebrew, Intel in /usr/local
+          # CMAKE_PREFIX_PATH tells find_package where to search
+          CMAKE_PREFIX_PATH: /opt/homebrew:/usr/local
         run: |
           cmake -B build-x86 -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OSX_ARCHITECTURES=x86_64
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH"
           cmake --build build-x86
 
       - name: Build arm64
+        env:
+          CMAKE_PREFIX_PATH: /opt/homebrew:/usr/local
         run: |
           cmake -B build-arm -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_OSX_ARCHITECTURES=arm64
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH"
           cmake --build build-arm
 
       - name: Merge universal binary
@@ -61,46 +72,32 @@ jobs:
           name: ghostim-macos-universal
           path: ghostim-macos-universal
 
-  # ── Windows x86-64 (MinGW + vcpkg) ───────────────────────────────────────
+  # ── Windows x86-64 (MSYS2 + pre-built MinGW packages) ─────────────────────
+  # MSYS2 provides pre-compiled packages — no compilation from source,
+  # build time is under 90 seconds total.
   windows:
     runs-on: windows-latest
-    defaults:
-      run:
-        shell: pwsh
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install MinGW
-        run: |
-          choco install mingw -y --no-progress
-          echo "C:\ProgramData\mingw64\mingw64\bin" | `
-            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Install pkg-config
-        run: choco install pkgconfiglite -y --no-progress
-
-      - name: Install libs via vcpkg
-        run: |
-          $root = $env:VCPKG_INSTALLATION_ROOT
-          & "$root\vcpkg" install libjpeg-turbo libpng libwebp `
-            --triplet x64-mingw-static
-          echo "VCPKG_ROOT=$root" >> $env:GITHUB_ENV
-
-          # Export pkg-config .pc files so CMake/pkg-config can find the libs
-          $pc = "$root\installed\x64-mingw-static\lib\pkgconfig"
-          echo "PKG_CONFIG_PATH=$pc" >> $env:GITHUB_ENV
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-libjpeg-turbo
+            mingw-w64-x86_64-libpng
+            mingw-w64-x86_64-libwebp
 
       - name: Build
+        shell: msys2 {0}
         run: |
-          gcc --version
-          cmake -B build -DCMAKE_BUILD_TYPE=Release `
-            -G "MinGW Makefiles" `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-mingw-static
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -G Ninja
           cmake --build build
-
-      - name: Rename binary
-        run: cp build\ghostim.exe ghostim-windows-x86_64.exe
+          cp build/ghostim.exe ghostim-windows-x86_64.exe
 
       - name: Upload
         uses: actions/upload-artifact@v4
@@ -108,7 +105,7 @@ jobs:
           name: ghostim-windows-x86_64.exe
           path: ghostim-windows-x86_64.exe
 
-  # ── Publish Release ───────────────────────────────────────────────────────
+  # ── Publish Release ────────────────────────────────────────────────────────
   release:
     needs: [linux, macos, windows]
     runs-on: ubuntu-latest
