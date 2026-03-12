@@ -5,20 +5,25 @@
 typedef enum { CMD_UNKNOWN = 0, CMD_INFO, CMD_CLEAN } Command;
 
 /*
- * Strip mode for --strip (applies only to EXIF content):
- *   STRIP_ALL  — remove the entire EXIF segment (default).
- *   STRIP_GPS  — remove only the GPS SubIFD pointer, keep other EXIF tags.
- *
- * Note: 'clean' always removes ALL non-image segments regardless of StripMode:
- * EXIF, JFIF headers, embedded thumbnails, comments, vendor APP segments.
- * Only compressed pixel data is preserved (DQT, DHT, SOF*, SOS, EOI).
+ * Strip mode (within EXIF):
+ *   STRIP_ALL — remove entire EXIF segment (default).
+ *   STRIP_GPS — remove only GPS SubIFD pointer, keep other EXIF tags.
  */
 typedef enum { STRIP_ALL = 0, STRIP_GPS } StripMode;
+
+/*
+ * Optimization mode:
+ *   OPT_LOSSLESS — remove metadata only, pixel data untouched (default).
+ *   OPT_LOSSY    — re-encode at controlled quality for maximum size reduction.
+ */
+typedef enum { OPT_LOSSLESS = 0, OPT_LOSSY } OptMode;
 
 /* Parsed CLI arguments */
 typedef struct {
   Command command;
   StripMode strip_mode;
+  OptMode opt_mode;
+  int quality; /* 1-100, used when opt_mode = OPT_LOSSY (default 85) */
   const char *output_dir;
   int dry_run;
   int verbose;

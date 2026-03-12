@@ -54,8 +54,9 @@ static unsigned int read_le32(const unsigned char *p) {
  */
 #define MARKER_APP2 0xE2
 #define MARKER_APPE 0xEE
-#define MARKER_SOS 0xDA /* Start of Scan: everything after is compressed data  \
-                         */
+#define MARKER_SOS                                                             \
+  0xDA /* Start of Scan: everything after is compressed data                   \
+        */
 
 /* ── TIFF / EXIF types ───────────────────────────────────────────────────── */
 #define TIFF_TYPE_BYTE 1
@@ -416,10 +417,10 @@ int jpeg_print_info(const char *path, int verbose) {
   double size_mb = (double)file_size / (1024.0 * 1024.0);
   printf("\n");
   printf("+==============================================+\n");
-  printf("|          JPEG Image Report                  |\n");
+  printf("|          JPEG Image Report                   |\n");
   printf("+==============================================+\n");
   printf("| File   : %-34s|\n", path);
-  printf("| Size   : %.2f MB                            |\n", size_mb);
+  printf("| Size   : %.2f MB                             |\n", size_mb);
   printf("| Format : %-34s|\n", found_jfif   ? "JFIF (standard JPEG)"
                                 : found_exif ? "EXIF JPEG"
                                              : "JPEG");
