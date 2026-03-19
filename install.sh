@@ -60,7 +60,7 @@ download() {
     local tmp
     tmp="$(mktemp)"
 
-    info "Downloading ${BINARY}-${target} from GitHub Releases..."
+    info "Downloading ${BINARY}-${target} from GitHub Releases..." >&2
     if ! curl -fsSL --progress-bar "$url" -o "$tmp"; then
         rm -f "$tmp"
         error "Download failed. Check your connection or visit:\n  https://github.com/${REPO}/releases"
