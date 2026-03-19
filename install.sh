@@ -8,7 +8,7 @@ set -euo pipefail
 REPO="Eddys912/ghostim"
 BINARY="ghostim"
 INSTALL_DIR="${HOME}/.local/bin"
-VERSION="1.0.0"
+VERSION="2.0.5"
 
 # ── Colors ─────────────────────────────────────────────────────────────────
 if [ -t 1 ]; then
