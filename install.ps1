@@ -1,4 +1,4 @@
-# install.ps1 — ghostim installer for Windows
+# install.ps1 — Ghostimg installer for Windows
 # Usage: irm https://raw.githubusercontent.com/USER/ghostim/main/install.ps1 | iex
 
 Set-StrictMode -Version Latest
@@ -7,7 +7,7 @@ $ErrorActionPreference = "Stop"
 # ── Config ─────────────────────────────────────────────────────────────────
 $Repo      = "Eddys912/ghostim"
 $Binary    = "ghostim"
-$Version   = "1.0.0"
+$Version   = "2.0.5"
 $InstallDir = "$env:USERPROFILE\AppData\Local\Programs\ghostim"
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
