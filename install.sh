@@ -5,7 +5,7 @@
 set -euo pipefail
 
 # ── Config ─────────────────────────────────────────────────────────────────
-REPO="edavnix/ghostimg"
+REPO="Eddys912/ghostimg"
 BINARY="ghostimg"
 INSTALL_DIR="${HOME}/.local/bin"
 VERSION="1.0.0"

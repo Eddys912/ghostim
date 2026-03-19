@@ -5,7 +5,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 # ── Config ─────────────────────────────────────────────────────────────────
-$Repo      = "edavnix/ghostimg"
+$Repo      = "Eddys912/ghostimg"
 $Binary    = "ghostimg"
 $Version   = "1.0.0"
 $InstallDir = "$env:USERPROFILE\AppData\Local\Programs\ghostimg"
