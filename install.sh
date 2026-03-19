@@ -5,8 +5,8 @@
 set -euo pipefail
 
 # ── Config ─────────────────────────────────────────────────────────────────
-REPO="Eddys912/ghostimg"
-BINARY="ghostimg"
+REPO="Eddys912/ghostim"
+BINARY="ghostim"
 INSTALL_DIR="${HOME}/.local/bin"
 VERSION="1.0.0"
 
@@ -98,7 +98,7 @@ ensure_path() {
 
     if [ -n "$shell_rc" ]; then
         echo "" >> "$shell_rc"
-        echo "# ghostimg" >> "$shell_rc"
+        echo "# ghostim" >> "$shell_rc"
         echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$shell_rc"
         echo ""
         echo -e "  ${YELLOW}Reload your shell or run:${RESET}"
@@ -121,7 +121,7 @@ verify() {
 # ── Main ────────────────────────────────────────────────────────────────────
 main() {
     echo ""
-    echo -e "${BOLD}ghostimg installer${RESET}  v${VERSION}"
+    echo -e "${BOLD}ghostim installer${RESET}  v${VERSION}"
     echo ""
 
     check_deps
@@ -138,7 +138,7 @@ main() {
     verify
 
     echo ""
-    echo -e "${BOLD}Done.${RESET} Run ${CYAN}ghostimg --help${RESET} to get started."
+    echo -e "${BOLD}Done.${RESET} Run ${CYAN}ghostim --help${RESET} to get started."
     echo ""
 }
 

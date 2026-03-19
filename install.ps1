@@ -1,14 +1,14 @@
-# install.ps1 — Ghostimg installer for Windows
-# Usage: irm https://raw.githubusercontent.com/USER/ghostimg/main/install.ps1 | iex
+# install.ps1 — ghostim installer for Windows
+# Usage: irm https://raw.githubusercontent.com/USER/ghostim/main/install.ps1 | iex
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 # ── Config ─────────────────────────────────────────────────────────────────
-$Repo      = "Eddys912/ghostimg"
-$Binary    = "ghostimg"
+$Repo      = "Eddys912/ghostim"
+$Binary    = "ghostim"
 $Version   = "1.0.0"
-$InstallDir = "$env:USERPROFILE\AppData\Local\Programs\ghostimg"
+$InstallDir = "$env:USERPROFILE\AppData\Local\Programs\ghostim"
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 function Write-Info    { param($msg) Write-Host "info   $msg" -ForegroundColor Yellow }
@@ -80,7 +80,7 @@ function Test-Install {
 # ── Main ────────────────────────────────────────────────────────────────────
 function Main {
     Write-Host ""
-    Write-Host "ghostimg installer  v${Version}" -ForegroundColor White
+    Write-Host "ghostim installer  v${Version}" -ForegroundColor White
     Write-Host ""
 
     $tmp  = Get-Binary
@@ -91,10 +91,10 @@ function Main {
     Write-Host ""
     Write-Host "Done. " -ForegroundColor White -NoNewline
     Write-Host "Run " -NoNewline
-    Write-Host "ghostimg --help" -ForegroundColor Cyan -NoNewline
+    Write-Host "ghostim --help" -ForegroundColor Cyan -NoNewline
     Write-Host " to get started."
     Write-Host ""
-    Write-Host "Note: if ghostimg is not found, open a new terminal window." -ForegroundColor Yellow
+    Write-Host "Note: if ghostim is not found, open a new terminal window." -ForegroundColor Yellow
     Write-Host ""
 }
 
