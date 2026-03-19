@@ -14,12 +14,12 @@
  */
 
 #include "ghostim/png_parser.h"
+#include "ghostim/endian.h"
+#include "ghostim/io.h"
+#include "ghostim/platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 #include <png.h>
 
@@ -27,11 +27,7 @@
 static const unsigned char PNG_SIG[8] = {0x89, 0x50, 0x4E, 0x47,
                                          0x0D, 0x0A, 0x1A, 0x0A};
 
-/* ── Endian helper ───────────────────────────────────────────────────────── */
-static unsigned int read_be32(const unsigned char *p) {
-  return ((unsigned int)p[0] << 24) | ((unsigned int)p[1] << 16) |
-         ((unsigned int)p[2] << 8) | (unsigned int)p[3];
-}
+
 /* ── Metadata chunk detection ────────────────────────────────────────────── */
 static int chunk_is_meta(const unsigned char type[4]) {
   static const char *drop[] = {"eXIf", "tEXt", "iTXt", "zTXt", "tIME", NULL};
@@ -41,81 +37,6 @@ static int chunk_is_meta(const unsigned char type[4]) {
   return 0;
 }
 
-/* ── Load file ───────────────────────────────────────────────────────────── */
-static unsigned char *load_file(const char *path, size_t *sz) {
-  FILE *f = fopen(path, "rb");
-  if (!f)
-    return NULL;
-  fseek(f, 0, SEEK_END);
-  long len = ftell(f);
-  rewind(f);
-  if (len <= 0) {
-    fclose(f);
-    return NULL;
-  }
-  unsigned char *b = (unsigned char *)malloc((size_t)len);
-  if (!b) {
-    fclose(f);
-    return NULL;
-  }
-  if (fread(b, 1, (size_t)len, f) != (size_t)len) {
-    free(b);
-    fclose(f);
-    return NULL;
-  }
-  fclose(f);
-  *sz = (size_t)len;
-  return b;
-}
-
-/* ── Atomic write ────────────────────────────────────────────────────────── */
-static int atomic_write(const char *dst, const unsigned char *data, size_t sz) {
-  char tmp[4096];
-  snprintf(tmp, sizeof(tmp), "%s.ghostim_tmp", dst);
-  FILE *f = fopen(tmp, "wb");
-  if (!f)
-    return -1;
-  fwrite(data, 1, sz, f);
-  fclose(f);
-#ifdef _WIN32
-  if (!MoveFileExA(tmp, dst, MOVEFILE_REPLACE_EXISTING)) {
-    remove(tmp);
-    return -1;
-  }
-#else
-  if (rename(tmp, dst) != 0) {
-    FILE *in = fopen(tmp, "rb"), *out = fopen(dst, "wb");
-    char b[65536];
-    size_t n;
-    while (in && out && (n = fread(b, 1, sizeof(b), in)) > 0)
-      fwrite(b, 1, n, out);
-    if (in)
-      fclose(in);
-    if (out)
-      fclose(out);
-    remove(tmp);
-  }
-#endif
-  return 0;
-}
-
-/* ── APPEND macro ────────────────────────────────────────────────────────── */
-#define APPEND(dst, dsz, dcap, src, n)                                         \
-  do {                                                                         \
-    size_t _n = (n);                                                           \
-    if ((dsz) + _n > (dcap)) {                                                 \
-      (dcap) = ((dsz) + _n) * 2;                                               \
-      unsigned char *_r = (unsigned char *)realloc((dst), (dcap));             \
-      if (!_r) {                                                               \
-        free(buf);                                                             \
-        free(out);                                                             \
-        return -1;                                                             \
-      }                                                                        \
-      (dst) = _r;                                                              \
-    }                                                                          \
-    memcpy((dst) + (dsz), (src), _n);                                          \
-    (dsz) += _n;                                                               \
-  } while (0)
 
 /* ════════════════════════════════════════════════════════════════════════════
  * PUBLIC: png_print_info
@@ -123,7 +44,7 @@ static int atomic_write(const char *dst, const unsigned char *data, size_t sz) {
  */
 int png_print_info(const char *path, int verbose) {
   size_t file_size = 0;
-  unsigned char *buf = load_file(path, &file_size);
+  unsigned char *buf = platform_load_file(path, &file_size);
   if (!buf) {
     fprintf(stderr, "Error: cannot open '%s'.\n", path);
     return -1;
@@ -220,7 +141,7 @@ int png_print_info(const char *path, int verbose) {
 static int png_lossless(const char *src, const char *dst, int dry_run,
                         int verbose) {
   size_t file_size = 0;
-  unsigned char *buf = load_file(src, &file_size);
+  unsigned char *buf = platform_load_file(src, &file_size);
   if (!buf) {
     fprintf(stderr, "Error: cannot open '%s'.\n", src);
     return -1;
@@ -275,7 +196,7 @@ static int png_lossless(const char *src, const char *dst, int dry_run,
   if (verbose)
     printf("  Removed %d chunk(s), saved %.1f KB (%.1f%%)\n", removed_n,
            saved_kb, pct);
-  int r = atomic_write(dst, out, out_size);
+  int r = platform_atomic_write(dst, out, out_size);
   free(out);
   return r;
 }
@@ -378,7 +299,7 @@ static int png_optimized(const char *src, const char *dst, int dry_run,
     printf("  Optimized PNG: %.1f KB → %.1f KB (%.1f%% smaller)\n", before_kb,
            after_kb, pct);
 
-  int r = atomic_write(dst, mb.data, mb.size);
+  int r = platform_atomic_write(dst, mb.data, mb.size);
   free(mb.data);
   return r;
 }

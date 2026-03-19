@@ -9,12 +9,12 @@
  */
 
 #include "ghostim/jpeg_parser.h"
+#include "ghostim/endian.h"
+#include "ghostim/io.h"
+#include "ghostim/platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 #include <jerror.h>
 #include <jpeglib.h>
@@ -30,22 +30,6 @@
 
 /* ── TIFF/EXIF constants ─────────────────────────────────────────────────── */
 #define TAG_GPS_IFD 0x8825
-
-/* ── Endian helpers ──────────────────────────────────────────────────────── */
-static unsigned short read_be16(const unsigned char *p) {
-  return (unsigned short)((p[0] << 8) | p[1]);
-}
-static unsigned short read_le16(const unsigned char *p) {
-  return (unsigned short)((p[1] << 8) | p[0]);
-}
-static unsigned int read_be32(const unsigned char *p) {
-  return ((unsigned int)p[0] << 24) | ((unsigned int)p[1] << 16) |
-         ((unsigned int)p[2] << 8) | (unsigned int)p[3];
-}
-static unsigned int read_le32(const unsigned char *p) {
-  return ((unsigned int)p[3] << 24) | ((unsigned int)p[2] << 16) |
-         ((unsigned int)p[1] << 8) | (unsigned int)p[0];
-}
 
 /* ── TIFF context ────────────────────────────────────────────────────────── */
 typedef struct {
@@ -219,64 +203,6 @@ static void strip_gps(unsigned char *seg, size_t len) {
   }
 }
 
-/* ── Load file ───────────────────────────────────────────────────────────── */
-static unsigned char *load_file(const char *path, size_t *sz) {
-  FILE *f = fopen(path, "rb");
-  if (!f)
-    return NULL;
-  fseek(f, 0, SEEK_END);
-  long len = ftell(f);
-  rewind(f);
-  if (len <= 0) {
-    fclose(f);
-    return NULL;
-  }
-  unsigned char *buf = (unsigned char *)malloc((size_t)len);
-  if (!buf) {
-    fclose(f);
-    return NULL;
-  }
-  if (fread(buf, 1, (size_t)len, f) != (size_t)len) {
-    free(buf);
-    fclose(f);
-    return NULL;
-  }
-  fclose(f);
-  *sz = (size_t)len;
-  return buf;
-}
-
-/* ── Atomic write ────────────────────────────────────────────────────────── */
-static int atomic_write(const char *dst, const unsigned char *data, size_t sz) {
-  char tmp[4096];
-  snprintf(tmp, sizeof(tmp), "%s.ghostim_tmp", dst);
-  FILE *f = fopen(tmp, "wb");
-  if (!f)
-    return -1;
-  fwrite(data, 1, sz, f);
-  fclose(f);
-#ifdef _WIN32
-  if (!MoveFileExA(tmp, dst, MOVEFILE_REPLACE_EXISTING)) {
-    remove(tmp);
-    return -1;
-  }
-#else
-  if (rename(tmp, dst) != 0) {
-    FILE *in = fopen(tmp, "rb"), *out = fopen(dst, "wb");
-    char b[65536];
-    size_t n;
-    while (in && out && (n = fread(b, 1, sizeof(b), in)) > 0)
-      fwrite(b, 1, n, out);
-    if (in)
-      fclose(in);
-    if (out)
-      fclose(out);
-    remove(tmp);
-  }
-#endif
-  return 0;
-}
-
 /* ── Segment drop logic ──────────────────────────────────────────────────── */
 static int seg_drop(unsigned char marker) {
   if (marker == MARKER_APP1)
@@ -290,31 +216,13 @@ static int seg_drop(unsigned char marker) {
   return 0;
 }
 
-/* ── APPEND macro ────────────────────────────────────────────────────────── */
-#define APPEND(dst, dsz, dcap, src, n)                                         \
-  do {                                                                         \
-    size_t _n = (n);                                                           \
-    if ((dsz) + _n > (dcap)) {                                                 \
-      (dcap) = ((dsz) + _n) * 2;                                               \
-      unsigned char *_r = (unsigned char *)realloc((dst), (dcap));             \
-      if (!_r) {                                                               \
-        free(buf);                                                             \
-        free(out);                                                             \
-        return -1;                                                             \
-      }                                                                        \
-      (dst) = _r;                                                              \
-    }                                                                          \
-    memcpy((dst) + (dsz), (src), _n);                                          \
-    (dsz) += _n;                                                               \
-  } while (0)
-
 /* ════════════════════════════════════════════════════════════════════════════
  * PUBLIC: jpeg_print_info
  * ════════════════════════════════════════════════════════════════════════════
  */
 int jpeg_print_info(const char *path, int verbose) {
   size_t file_size = 0;
-  unsigned char *buf = load_file(path, &file_size);
+  unsigned char *buf = platform_load_file(path, &file_size);
   if (!buf) {
     fprintf(stderr, "Error: cannot open '%s'.\n", path);
     return -1;
@@ -414,7 +322,7 @@ int jpeg_print_info(const char *path, int verbose) {
 static int jpeg_lossless(const char *src, const char *dst, StripMode strip_mode,
                          int dry_run, int verbose) {
   size_t file_size = 0;
-  unsigned char *buf = load_file(src, &file_size);
+  unsigned char *buf = platform_load_file(src, &file_size);
   if (!buf) {
     fprintf(stderr, "Error: cannot open '%s'.\n", src);
     return -1;
@@ -505,7 +413,7 @@ static int jpeg_lossless(const char *src, const char *dst, StripMode strip_mode,
     printf("  Removed %d segment(s), saved %.1f KB (%.1f%%)\n", removed_n,
            saved_kb, pct);
 
-  int r = atomic_write(dst, out, out_size);
+  int r = platform_atomic_write(dst, out, out_size);
   free(out);
   return r;
 }
@@ -612,7 +520,7 @@ static int jpeg_lossy(const char *src, const char *dst, int quality,
     printf("  Lossy re-encode quality=%d: %.1f KB → %.1f KB (%.1f%% smaller)\n",
            quality, before_kb, after_kb, saved_pct);
 
-  int r = atomic_write(dst, out_buf, (size_t)out_size);
+  int r = platform_atomic_write(dst, out_buf, (size_t)out_size);
   free(out_buf);
   return r;
 }

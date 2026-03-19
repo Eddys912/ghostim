@@ -13,8 +13,7 @@ int webp_print_info(const char *path, int verbose);
  *   Uses WebP lossy encoder for quality < 100,
  *   lossless encoder for quality == 100.
  */
-int webp_clean(const char *src, const char *dst,
-               OptMode opt_mode, int quality,
+int webp_clean(const char *src, const char *dst, OptMode opt_mode, int quality,
                int dry_run, int verbose);
 
 #endif /* GHOSTIM_WEBP_PARSER_H */

@@ -13,92 +13,23 @@
  */
 
 #include "ghostim/webp_parser.h"
+#include "ghostim/endian.h"
+#include "ghostim/platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 #include <webp/decode.h>
 #include <webp/demux.h>
 #include <webp/encode.h>
 #include <webp/mux.h>
 
-/* ── Endian helpers ──────────────────────────────────────────────────────── */
-static unsigned int read_le32(const unsigned char *p) {
-  return (unsigned int)p[0] | ((unsigned int)p[1] << 8) |
-         ((unsigned int)p[2] << 16) | ((unsigned int)p[3] << 24);
-}
-static void write_le32(unsigned char *p, unsigned int v) {
-  p[0] = (unsigned char)v;
-  p[1] = (unsigned char)(v >> 8);
-  p[2] = (unsigned char)(v >> 16);
-  p[3] = (unsigned char)(v >> 24);
-}
+
 
 /* ── Metadata chunk FourCCs to drop ─────────────────────────────────────── */
 static int chunk_is_meta(const unsigned char *fourcc) {
   return memcmp(fourcc, "EXIF", 4) == 0 || memcmp(fourcc, "XMP ", 4) == 0 ||
          memcmp(fourcc, "ICCP", 4) == 0;
-}
-
-/* ── Load file ───────────────────────────────────────────────────────────── */
-static unsigned char *load_file(const char *path, size_t *sz) {
-  FILE *f = fopen(path, "rb");
-  if (!f)
-    return NULL;
-  fseek(f, 0, SEEK_END);
-  long len = ftell(f);
-  rewind(f);
-  if (len <= 0) {
-    fclose(f);
-    return NULL;
-  }
-  unsigned char *b = (unsigned char *)malloc((size_t)len);
-  if (!b) {
-    fclose(f);
-    return NULL;
-  }
-  if (fread(b, 1, (size_t)len, f) != (size_t)len) {
-    free(b);
-    fclose(f);
-    return NULL;
-  }
-  fclose(f);
-  *sz = (size_t)len;
-  return b;
-}
-
-/* ── Atomic write ────────────────────────────────────────────────────────── */
-static int atomic_write(const char *dst, const unsigned char *data, size_t sz) {
-  char tmp[4096];
-  snprintf(tmp, sizeof(tmp), "%s.ghostim_tmp", dst);
-  FILE *f = fopen(tmp, "wb");
-  if (!f)
-    return -1;
-  fwrite(data, 1, sz, f);
-  fclose(f);
-#ifdef _WIN32
-  if (!MoveFileExA(tmp, dst, MOVEFILE_REPLACE_EXISTING)) {
-    remove(tmp);
-    return -1;
-  }
-#else
-  if (rename(tmp, dst) != 0) {
-    FILE *in = fopen(tmp, "rb"), *out = fopen(dst, "wb");
-    char b[65536];
-    size_t n;
-    while (in && out && (n = fread(b, 1, sizeof(b), in)) > 0)
-      fwrite(b, 1, n, out);
-    if (in)
-      fclose(in);
-    if (out)
-      fclose(out);
-    remove(tmp);
-  }
-#endif
-  return 0;
 }
 
 /* ── Validate RIFF/WEBP header ───────────────────────────────────────────── */
@@ -113,7 +44,7 @@ static int is_webp(const unsigned char *buf, size_t sz) {
  */
 int webp_print_info(const char *path, int verbose) {
   size_t file_size = 0;
-  unsigned char *buf = load_file(path, &file_size);
+  unsigned char *buf = platform_load_file(path, &file_size);
   if (!buf) {
     fprintf(stderr, "Error: cannot open '%s'.\n", path);
     return -1;
@@ -187,7 +118,7 @@ int webp_print_info(const char *path, int verbose) {
 static int webp_lossless_strip(const char *src, const char *dst, int dry_run,
                                int verbose) {
   size_t file_size = 0;
-  unsigned char *buf = load_file(src, &file_size);
+  unsigned char *buf = platform_load_file(src, &file_size);
   if (!buf) {
     fprintf(stderr, "Error: cannot open '%s'.\n", src);
     return -1;
@@ -250,7 +181,7 @@ static int webp_lossless_strip(const char *src, const char *dst, int dry_run,
   if (verbose)
     printf("  Removed %d chunk(s), saved %.1f KB (%.1f%%)\n", removed_n,
            saved_kb, pct);
-  int r = atomic_write(dst, out, out_size);
+  int r = platform_atomic_write(dst, out, out_size);
   free(out);
   return r;
 }
@@ -262,7 +193,7 @@ static int webp_lossless_strip(const char *src, const char *dst, int dry_run,
 static int webp_reencode(const char *src, const char *dst, int quality,
                          int dry_run, int verbose) {
   size_t file_size = 0;
-  unsigned char *buf = load_file(src, &file_size);
+  unsigned char *buf = platform_load_file(src, &file_size);
   if (!buf) {
     fprintf(stderr, "Error: cannot open '%s'.\n", src);
     return -1;
@@ -306,7 +237,7 @@ static int webp_reencode(const char *src, const char *dst, int quality,
     printf("  WebP re-encode quality=%d: %.1f KB → %.1f KB (%.1f%% smaller)\n",
            quality, before_kb, after_kb, pct);
 
-  int r = atomic_write(dst, out_buf, out_size);
+  int r = platform_atomic_write(dst, out_buf, out_size);
   WebPFree(out_buf);
   return r;
 }

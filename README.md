@@ -1,9 +1,13 @@
-<div align="center">
-  <h1>Ghotimg</h1>
-  <p>Image metadata remover for <strong>JPEG</strong> and <strong>PNG</strong> files</p>
+![Ghostimg](assets/banner.png)
 
-![Arch](https://img.shields.io/badge/Arch-1793D1?logo=archlinux&logoColor=1793D1&labelColor=fff&color=1793D1)
-![C](https://img.shields.io/badge/C-00599C?logo=c&logoColor=00599C&labelColor=fff&color=00599C)
+<div align="center">
+  <h1>Ghostimg</h1>
+  <p>Cross-platform CLI tool to <strong>strip metadata</strong> and <strong>optimize images</strong> - JPEG, PNG, and WebP</p>
+
+![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=000&labelColor=fff&color=FCC624)
+![macOS](https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=000&labelColor=fff&color=000000)
+![Windows](https://img.shields.io/badge/Windows-0078D4?logo=windows&logoColor=0078D4&labelColor=fff&color=0078D4)
+![C](https://img.shields.io/badge/C99-00599C?logo=c&logoColor=00599C&labelColor=fff&color=00599C)
 
 </div>
 
